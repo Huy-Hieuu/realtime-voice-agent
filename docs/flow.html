@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>speech-to-speech: how every flow works</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#111111; --muted:#3b3b3b; --line:#1a1a1a; --soft:#f4f5f7;
+    --accent:#0b57d0; --accent-bg:#e3ecfd;
+    --thread:#eef3ff; --queue:#fff1b8; --queue-line:#7a5a00; --model:#f3e8ff; --model-line:#5b2a86;
+    --ok:#0a6b2e; --ok-bg:#e3f4e8; --inf:#8a4b00; --inf-bg:#fff0dc; --hot:#b3261e; --hot-bg:#fde7e5;
+  }
+  *, *::before, *::after { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:72px; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:18px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color:var(--accent); }
+  code, .mono { font:15px/1.35 ui-monospace, Menlo, Consolas, monospace; }
+  code { background:var(--soft); border:1px solid #c9ccd1; border-radius:4px; padding:0 4px; overflow-wrap:anywhere; }
+  main { max-width:1280px; margin:0 auto; padding:0 20px 80px; }
+  section { padding:28px 0 8px; border-top:3px solid var(--line); margin-top:28px; }
+  h1 { font-size:38px; line-height:1.15; margin:28px 0 8px; }
+  h2 { font-size:30px; line-height:1.2; margin:0 0 6px; }
+  h3 { font-size:21px; margin:18px 0 6px; }
+  .q { font-size:20px; color:var(--muted); margin:0 0 14px; }
+  .q b { color:var(--fg); }
+  p { margin:8px 0; max-width:80ch; }
+  ul.tight { margin:6px 0 10px; padding-left:22px; max-width:80ch; }
+  ul.tight li { margin:3px 0; }
+
+  /* nav */
+  nav.top { position:sticky; top:0; z-index:10; background:#fff; border-bottom:3px solid var(--line); }
+  nav.top .in { max-width:1280px; margin:0 auto; padding:8px 20px; display:flex; gap:4px; overflow-x:auto; white-space:nowrap; }
+  @media (min-width:900px) { nav.top .in { flex-wrap:wrap; } }
+  nav.top a { text-decoration:none; color:var(--fg); font-weight:700; font-size:16px; padding:6px 10px; border:2px solid transparent; border-radius:6px; }
+  nav.top a:hover, nav.top a:focus-visible, nav.top a.cur { border-color:var(--line); background:var(--accent-bg); outline:none; }
+
+  /* badges */
+  .tag { display:inline-block; font-size:13px; font-weight:800; letter-spacing:.02em; padding:1px 7px; border-radius:4px; border:2px solid; vertical-align:2px; white-space:nowrap; }
+  .tag.m { color:var(--ok); background:var(--ok-bg); border-color:var(--ok); }
+  .tag.i { color:var(--inf); background:var(--inf-bg); border-color:var(--inf); }
+  .tag.c { color:var(--accent); background:var(--accent-bg); border-color:var(--accent); }
+  .tag.x { color:var(--hot); background:var(--hot-bg); border-color:var(--hot); }
+
+  /* stats */
+  .stats { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; margin:16px 0; }
+  .stat { border:2px solid var(--line); border-radius:8px; padding:10px 14px; }
+  .stat .v { font-size:34px; font-weight:800; line-height:1.1; }
+  .stat .k { font-size:16px; color:var(--muted); }
+  @media (max-width:820px) { .stats { grid-template-columns:repeat(2, minmax(0,1fr)); } }
+
+  .tldr { font-size:20px; border-left:6px solid var(--accent); background:var(--accent-bg); padding:12px 16px; border-radius:0 8px 8px 0; max-width:none; }
+
+  /* figures */
+  .fig { border:2px solid var(--line); border-radius:8px; overflow-x:auto; background:#fff; }
+  .fig svg { display:block; width:100%; height:auto; min-width:700px; }
+  svg text { font-family:system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; fill:#111; }
+  svg .t1 { font-size:17px; font-weight:800; }
+  svg .t2 { font-size:14.5px; fill:#222; }
+  svg .tm { font:13px ui-monospace, Menlo, Consolas, monospace; fill:#111; }
+  svg .zone { fill:none; stroke:#666; stroke-width:2; stroke-dasharray:8 6; }
+  svg .zl { font-size:14px; font-weight:800; fill:#555; }
+  svg .node rect { fill:var(--thread); stroke:var(--line); stroke-width:2; rx:8; }
+  svg .node.ext rect { fill:#fff; }
+  svg .node.mdl rect { fill:var(--model); stroke:var(--model-line); stroke-dasharray:5 4; }
+  svg .node.svc rect { fill:#e9f7ef; }
+  svg .node { cursor:pointer; transition:opacity .25s; }
+  svg .node:hover rect, svg .node:focus-visible rect { stroke:var(--accent); stroke-width:4; outline:none; }
+  svg .node.sel rect { stroke:var(--accent); stroke-width:4; }
+  svg .edge { fill:none; stroke:#222; stroke-width:2.2; }
+  svg .edge.ev { stroke:#666; stroke-dasharray:7 5; }
+  svg .edge.ml { stroke:var(--model-line); stroke-dasharray:3 4; stroke-width:1.6; }
+  svg .qlead { fill:none; stroke:var(--queue-line); stroke-width:1.5; }
+  svg .pill rect { fill:var(--queue); stroke:var(--queue-line); stroke-width:1.5; rx:4; }
+  svg .pill text { font:13px ui-monospace, Menlo, Consolas, monospace; fill:#3d2c00; }
+  svg .packet { fill:var(--hot); stroke:#fff; stroke-width:2.5; }
+  svg .badge rect { fill:var(--hot-bg); stroke:var(--hot); stroke-width:1.5; rx:4; }
+  svg .badge text { font-size:13px; font-weight:800; fill:var(--hot); }
+  /* flow state */
+  .player.playing svg .node, .player.stepped svg .node { opacity:.5; }
+  .player.playing svg .node.on, .player.stepped svg .node.on { opacity:1; }
+  svg .node.on rect { stroke:var(--accent); stroke-width:4.5; fill:var(--accent-bg); }
+  svg .edge.on { stroke:var(--accent); stroke-width:4.5; stroke-dasharray:none; }
+  svg .pill.on rect { stroke:var(--accent); stroke-width:3; }
+
+  .legend { display:flex; flex-wrap:wrap; gap:8px 18px; font-size:15px; margin:8px 2px; color:var(--muted); }
+  .legend > span::before { content:""; display:inline-block; width:22px; height:14px; margin-right:6px; vertical-align:-2px; border:2px solid var(--line); border-radius:3px; }
+  .legend.plain > span::before { display:none; }
+  #wf text { paint-order:stroke; stroke:#fff; stroke-width:4px; stroke-linejoin:round; }
+  .legend .l-th::before { background:var(--thread); }
+  .legend .l-q::before { background:var(--queue); border-color:var(--queue-line); }
+  .legend .l-m::before { background:var(--model); border:2px dashed var(--model-line); }
+  .legend .l-s::before { background:#e9f7ef; }
+  .legend .l-ev::before { border:0; border-top:3px dashed #666; height:0; vertical-align:4px; }
+
+  /* detail card */
+  .card { border:2px solid var(--line); border-radius:8px; padding:12px 16px; background:#fff; }
+  .card h3 { margin:0 0 6px; }
+  dl.kv { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 14px; margin:8px 0 0; }
+  dl.kv dt { font-weight:800; }
+  dl.kv dd { margin:0; overflow-wrap:anywhere; }
+  @media (max-width:560px) { dl.kv { grid-template-columns:1fr; gap:0; } dl.kv dd { margin-bottom:8px; } }
+  a.ref { display:inline-block; max-width:100%; margin:1px 0; font:14.5px ui-monospace, Menlo, Consolas, monospace; background:var(--soft); border:1px solid #c9ccd1; border-radius:4px; padding:0 4px; text-decoration:none; overflow-wrap:anywhere; }
+  a.ref:hover { text-decoration:underline; }
+
+  /* player */
+  .player { margin:14px 0 6px; }
+  .ctrl { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 0 10px; }
+  .ctrl button { font:inherit; font-size:17px; font-weight:800; padding:7px 16px; border:2px solid var(--line); border-radius:6px; background:#fff; color:var(--fg); cursor:pointer; min-height:44px; }
+  .ctrl button.primary { background:var(--line); color:#fff; min-width:112px; }
+  .ctrl button:hover, .ctrl button:focus-visible { outline:3px solid var(--accent); outline-offset:1px; }
+  .ctrl .count { font-weight:800; font-variant-numeric:tabular-nums; margin-left:4px; }
+  .dots { display:flex; flex-wrap:wrap; gap:5px; }
+  .dots button { width:30px; height:30px; padding:0; font-size:13px; font-weight:800; border:2px solid var(--line); border-radius:50%; background:#fff; cursor:pointer; }
+  .dots button.done { background:#cfd3da; }
+  .dots button.cur { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .pgrid { display:grid; grid-template-columns:minmax(0,2fr) minmax(340px,1fr); gap:14px; align-items:start; }
+  .pgrid > * { min-width:0; }
+  @media (max-width:1100px) { .pgrid { grid-template-columns:1fr; } }
+  .step h3 { font-size:22px; margin:0 0 4px; }
+  .step .what { font-size:18px; margin:4px 0 6px; }
+
+  /* tables */
+  .tw { overflow-x:auto; border:2px solid var(--line); border-radius:8px; }
+  table { border-collapse:collapse; width:100%; font-size:16.5px; }
+  th, td { border-bottom:1px solid #b9bdc4; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--line); color:#fff; }
+  td.n { font-variant-numeric:tabular-nums; font-weight:800; white-space:nowrap; }
+
+  /* toggles */
+  .seg { display:inline-flex; border:2px solid var(--line); border-radius:8px; overflow:hidden; margin:6px 0 10px; }
+  .seg button { font:inherit; font-size:16px; font-weight:800; padding:7px 14px; border:0; background:#fff; cursor:pointer; min-height:44px; }
+  .seg button[aria-pressed="true"] { background:var(--line); color:#fff; }
+
+  /* glossary + cards */
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin-top:10px; }
+  .g { border:2px solid var(--line); border-radius:8px; padding:10px 14px; }
+  .g b { font-size:19px; display:block; }
+  .g p { margin:4px 0; font-size:16.5px; }
+  .lc .st { font-size:14px; font-weight:800; text-transform:uppercase; letter-spacing:.04em; color:var(--accent); }
+  .lc h3 { margin:2px 0 6px; font-size:20px; }
+  .lc p { font-size:16.5px; margin:5px 0; }
+  .lc p b { display:inline; font-size:inherit; }
+  .note { border:2px solid var(--inf); background:var(--inf-bg); border-radius:8px; padding:10px 14px; margin:12px 0; max-width:none; }
+  .no { border:2px solid var(--hot); background:var(--hot-bg); border-radius:8px; padding:10px 14px; margin:12px 0; }
+  footer { margin-top:40px; color:var(--muted); font-size:15px; }
+  @media (max-width:560px) {
+    body { font-size:17px; } h1 { font-size:30px; } h2 { font-size:25px; }
+    main { padding:0 12px 60px; } .stat .v { font-size:27px; } .tldr { font-size:18px; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior:auto; } }
+</style>
+</head>
+<body>
+<nav class="top" aria-label="Sections"><div class="in">
+  <span role="group" aria-label="Language" style="display:inline-flex;align-items:center;margin-right:8px;font-weight:700"><a href="flow.html" aria-current="page" style="background:var(--line);color:#fff">EN</a>|<a href="flow.vi.html" hreflang="vi" lang="vi">VI</a></span>
+  <a href="#overview">Overview</a>
+  <a href="#startup">1 Startup</a>
+  <a href="#turn">2 One turn</a>
+  <a href="#streaming">3 Streaming</a>
+  <a href="#turnend">4 Turn end</a>
+  <a href="#bargein">5 Barge-in</a>
+  <a href="#modes">6 Modes</a>
+  <a href="#history">7 History</a>
+  <a href="#timeline">Timeline</a>
+  <a href="#numbers">Numbers</a>
+  <a href="#glossary">Glossary</a>
+  <a href="#learn">Learn &amp; build</a>
+</div></nav>
+<main>
+
+<!-- ============ OVERVIEW ============ -->
+<section id="overview" style="border-top:0;margin-top:0">
+  <h1>How a spoken question becomes a spoken answer</h1>
+  <p class="q"><b>This page answers:</b> what runs where in <code>speech-to-speech</code>, how one voice turn moves through it, and where the 2.89 s before the first reply audio go.</p>
+  <p class="tldr"><b>TL;DR.</b> One server process loads four models, then runs each pipeline part in its own Python thread. Plain <code>queue.Queue</code> objects join the threads. Audio arrives over a WebSocket. <b>VAD</b> waits for the speaker to stop. <b>STT</b> turns the audio into text. The <b>LLM</b> streams a reply in batches of 3 sentences. <b>TTS</b> turns each batch into small 32 ms PCM blocks, and the server streams them back. In the Stage 0 run, the first reply audio reached the client after <b>2.89 s</b> (p50). Of that, about 0.96 s is the 900 ms silence wait the eval client asked for, and 1.40 s is the LLM writing its first 3 sentences.</p>
+  <div class="stats">
+    <div class="stat"><div class="v">2.89 s</div><div class="k">first audio p50 (client) <span class="tag m">measured</span></div></div>
+    <div class="stat"><div class="v">4.43 s</div><div class="k">first audio p90 (client) <span class="tag m">measured</span></div></div>
+    <div class="stat"><div class="v">1.82%</div><div class="k">STT WER, LibriSpeech n=100 <span class="tag m">measured</span></div></div>
+    <div class="stat"><div class="v">42.5%</div><div class="k">Big Bench Audio, 17 of 40 <span class="tag m">measured</span></div></div>
+  </div>
+  <p>Stage 0 setup: Silero VAD + Smart Turn v3.2 / Parakeet TDT 0.6B v3 / <b>Qwen3.5-0.8B</b> (swap: the default Qwen3.5-4B needs about 24 GB, and the shared GPU never had that much free, so the default is <b>not measured</b>) / Qwen3-TTS 1.7B CustomVoice (GGML). Source: <a href="baselines.md">baselines.md</a>. All code paths are under <code>src/speech_to_speech/</code>. Each code link opens that line on the <code>main</code> branch of <code>realtime-voice-agent</code>.</p>
+
+  <h3>The big picture</h3>
+  <p>Click any box to see its details.</p>
+  <div class="fig"><svg id="bigpic" viewBox="0 0 1440 640" role="img" aria-label="System overview: client, router, six handler threads, queues and models"></svg></div>
+  <div class="legend"><span class="l-th">handler = own thread</span><span class="l-q">queue.Queue</span><span class="l-m">model</span><span class="l-s">asyncio server thread</span><span class="l-ev">events (text_output_queue)</span></div>
+  <div class="card" id="bp-card" aria-live="polite"><h3>Click a box</h3><p>Every box with a blue fill is a handler. <code>ThreadManager.start</code> gives each one a <code>threading.Thread</code> (<a class="ref" data-r="utils/thread_manager.py:20" data-n="threading.Thread(target=handler.run)"></a>). Each thread runs the same loop in <code>BaseHandler</code>: take one item from its input queue (<a class="ref" data-r="baseHandler.py:139" data-n="self.queue_in.get(timeout=0.1)"></a>), run <code>process()</code> (<a class="ref" data-r="baseHandler.py:199" data-n="self.process(typed_item)"></a>), and put each result on its output queue (<a class="ref" data-r="baseHandler.py:211" data-n="self.queue_out.put(queued_output)"></a>).</p></div>
+</section>
+
+<!-- ============ FLOWS ============ -->
+<section id="startup">
+  <h2>1. Startup and model loading</h2>
+  <p class="q"><b>Question:</b> what happens between typing <code>speech-to-speech serve</code> and the server accepting a client?</p>
+  <ul class="tight"><li>All models load one after another on the main thread. No handler thread starts until every model is loaded and warmed up.</li><li>Times come from the Stage 0 <code>server.log</code>. That was the first launch, so they include model downloads.</li></ul>
+  <div class="player" data-flow="startup"></div>
+</section>
+
+<section id="turn">
+  <h2>2. One normal voice turn, end to end</h2>
+  <p class="q"><b>Question:</b> which thread, queue and function does one question pass through, and what does each step cost?</p>
+  <ul class="tight"><li>Times are Stage 0 p50 over 40 turns, plus one real turn from the log (question 3 of 40).</li><li>Several stage times can overlap, so you cannot just add them up. The <a href="#timeline">timeline</a> shows how they line up.</li></ul>
+  <div class="player" data-flow="turn"></div>
+</section>
+
+<section id="streaming">
+  <h2>3. Streaming: tokens → sentences → TTS chunks → audio</h2>
+  <p class="q"><b>Question:</b> why does audio start before the LLM has finished, and what sets the size of each piece?</p>
+  <ul class="tight"><li>Four batching points set the first-audio time: the 3-sentence batch, the TTS model chunk of 8 codec tokens (about 640 ms of audio), the 512-sample PCM block, and the send batch of up to 6400 bytes.</li></ul>
+  <div class="player" data-flow="stream"></div>
+</section>
+
+<section id="turnend">
+  <h2>4. Turn end: how VAD decides you stopped</h2>
+  <p class="q"><b>Question:</b> when does the server decide the user finished, and why is <code>vad_decision</code> exactly 0.96 s in every Stage 0 turn?</p>
+  <ul class="tight"><li>Silero scores each 32 ms chunk. A turn ends after enough quiet chunks in a row. Smart Turn then decides how long to hold the reply in case the user starts talking again.</li></ul>
+  <div class="player" data-flow="turnend"></div>
+</section>
+
+<section id="bargein">
+  <h2>5. Interruption (barge-in)</h2>
+  <p class="q"><b>Question:</b> if the user talks while the assistant speaks, what stops and what is kept?</p>
+  <p><span class="tag c">supported</span> Barge-in exists and is on by default (session <code>turn_detection.interrupt_response</code>, <a class="ref" data-r="api/openai_realtime/runtime_config.py:134" data-n="interrupt_response_enabled"></a>). The server mic path is never muted: nothing in the code calls <code>should_listen.clear()</code>.</p>
+  <div class="player" data-flow="barge"></div>
+</section>
+
+<section id="modes">
+  <h2>6. Modes: serve, local, talk (WebSocket or WebRTC)</h2>
+  <p class="q"><b>Question:</b> what is different between running the server, the all-in-one local mode, and a client?</p>
+  <div class="no"><b>No raw socket mode.</b> The code has no socket receiver or sender. A search for <code>socket_receiver</code>, <code>SocketSender</code> and <code>websocket_server</code> returns nothing. The old <code>--mode realtime|local</code> flag still parses but maps to <code>serve</code> / <code>local</code> (<a class="ref" data-r="cli.py:20" data-n="_LEGACY_MODE_COMMANDS"></a>). Every mode uses the same OpenAI Realtime protocol.</div>
+  <div class="player" data-flow="modes"></div>
+</section>
+
+<section id="history">
+  <h2>7. Chat history</h2>
+  <p class="q"><b>Question:</b> how does the model remember earlier turns, and what happens to a reply that was cut off?</p>
+  <p><span class="tag c">supported</span> Each WebSocket session has one <code>Chat</code> object. The Stage 0 eval opens <b>one connection per question</b> (<a class="ref" data-r="evals/big_bench_audio/runner.py:3" data-n="One websocket connection per question"></a>), so every question started with an empty history. Each request was 460–549 input tokens: the instructions plus one question.</p>
+  <div class="player" data-flow="history"></div>
+</section>
+
+<!-- ============ TIMELINE ============ -->
+<section id="timeline">
+  <h2>Where the 2.89 s go: one turn as a waterfall</h2>
+  <p class="q"><b>Question:</b> which part of the pipeline costs the most before the first reply audio?</p>
+  <div class="seg" role="group" aria-label="Which turn">
+    <button type="button" data-wf="p50" aria-pressed="true">Typical turn (p50 of 40)</button>
+    <button type="button" data-wf="real" aria-pressed="false">One real turn (question 3)</button>
+  </div>
+  <div class="fig"><svg id="wf" viewBox="0 0 1200 470" role="img" aria-label="Latency waterfall"></svg></div>
+  <div class="legend plain" style="margin-top:8px"><span><span class="tag m">measured</span> from <code>server.log</code> / <code>bba40.json</code></span><span><span class="tag i">[INFERENCE]</span> derived, not measured directly</span></div>
+  <div class="card" id="wf-notes"></div>
+</section>
+
+<!-- ============ NUMBERS ============ -->
+<section id="numbers">
+  <h2>Stage 0 numbers</h2>
+  <p class="q"><b>Question:</b> what exactly was measured, and how?</p>
+  <div class="tw"><table>
+    <thead><tr><th>What</th><th>p50</th><th>p90</th><th>Clock: from → to</th><th>Source</th></tr></thead>
+    <tbody id="numtab"></tbody>
+  </table></div>
+  <p style="font-size:16px">p90 uses <code>statistics.quantiles(n=10)</code>, the same method as <a href="stage0-baseline.md">stage0-baseline.md</a> step 8. Run outputs: <code>runs-s0/bba40.json</code>, <code>server.log</code>, <code>wer.json</code>.</p>
+</section>
+
+<!-- ============ GLOSSARY ============ -->
+<section id="glossary">
+  <h2>Glossary</h2>
+  <div class="grid" id="gloss"></div>
+</section>
+
+<!-- ============ LEARN & BUILD ============ -->
+<section id="learn">
+  <h2>How to learn it</h2>
+  <p class="q">One card per part. Read the code line, run the experiment, and compare with the Stage 0 number.</p>
+  <div class="grid" id="learncards"></div>
+  <h2 style="margin-top:28px">How to build one yourself</h2>
+  <p class="q">Build in this order. Don't start a step until the previous step's done-check passes.</p>
+  <div class="grid" id="buildcards"></div>
+</section>
+
+<footer>Code: <code>realtime-voice-agent</code> <code>main</code>. Numbers: Stage 0 run 2026-11-13 (<a href="baselines.md">baselines.md</a>). Roadmap: <a href="ROADMAP.md">ROADMAP.md</a>. A static file: open it directly in a browser.</footer>
+</main>
+
+<script>
+"use strict";
+// ---------- helpers ----------
+const GH = "https://github.com/Huy-Hieuu/realtime-voice-agent/blob/main/src/speech_to_speech/";
+const NS = "http://www.w3.org/2000/svg";
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;"); }
+// R(path:line, needle): a code citation. The needle is text that must appear on that line (checked before commit).
+function R(loc, needle) {
+  const i = loc.lastIndexOf(":");
+  return '<a class="ref" href="' + GH + loc.slice(0, i) + "#L" + loc.slice(i + 1) + '" target="_blank" rel="noopener" data-n="' + esc(needle) + '">' + loc + "</a>";
+}
+const M = '<span class="tag m">measured</span>', I = '<span class="tag i">[INFERENCE]</span>', NM = '<span class="tag x">not measured</span>';
+function el(tag, attrs, parent, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function defs(svg) {
+  const d = el("defs", {}, svg);
+  for (const [id, color] of [["a", "#222"], ["aOn", "#0b57d0"], ["aEv", "#666"]]) {
+    const m = el("marker", { id: svg.id + "-" + id, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: "auto-start-reverse" }, d);
+    el("path", { d: "M0,0 L10,5 L0,10 z", fill: color }, m);
+  }
+}
+// box: a clickable node with a title and up to two sub lines
+function box(svg, id, x, y, w, h, title, subs, kind) {
+  const g = el("g", { id: svg.id + "-" + id, class: "node " + (kind || ""), tabindex: 0, role: "button", "aria-label": title }, svg);
+  el("title", {}, g, title);
+  el("rect", { x, y, width: w, height: h, rx: 8 }, g);
+  const lines = subs ? (Array.isArray(subs) ? subs : [subs]) : [];
+  const top = y + h / 2 - (lines.length * 17) / 2 + 6;
+  el("text", { x: x + w / 2, y: top, "text-anchor": "middle", class: "t1" }, g, title);
+  lines.forEach((s, k) => el("text", { x: x + w / 2, y: top + 19 + k * 17, "text-anchor": "middle", class: "t2" }, g, s));
+  g.dataset.id = id;
+  return g;
+}
+function edge(svg, id, d, kind) {
+  const p = el("path", { id: svg.id + "-" + id, d, class: "edge " + (kind || "") }, svg);
+  p.setAttribute("marker-end", "url(#" + svg.id + (kind === "ev" ? "-aEv)" : "-a)"));
+  return p;
+}
+function pill(svg, id, x, y, text) {
+  const g = el("g", { class: "pill", id: svg.id + "-q-" + id }, svg);
+  const w = text.length * 8.1 + 14;
+  el("rect", { x: x - w / 2, y: y - 12, width: w, height: 23 }, g);
+  el("text", { x, y: y + 4.5, "text-anchor": "middle" }, g, text);
+  return g;
+}
+function label(svg, x, y, text, cls, anchor) { return el("text", { x, y, class: cls || "t2", "text-anchor": anchor || "middle" }, svg, text); }
+function badge(svg, x, y, text) {
+  const g = el("g", { class: "badge" }, svg);
+  const w = text.length * 7.6 + 12;
+  el("rect", { x: x - w / 2, y: y - 13, width: w, height: 21 }, g);
+  el("text", { x, y: y + 3, "text-anchor": "middle" }, g, text);
+}
+function hydrateRefs(root) {
+  root.querySelectorAll("a.ref[data-r]").forEach(a => {
+    const loc = a.dataset.r, i = loc.lastIndexOf(":");
+    a.href = GH + loc.slice(0, i) + "#L" + loc.slice(i + 1);
+    a.target = "_blank"; a.rel = "noopener"; a.textContent = loc;
+  });
+}
+
+// ---------- big picture ----------
+const BP = {
+  client: { t: "Client", d: "Anything that speaks the OpenAI Realtime protocol. In Stage 0 it was the Big Bench Audio eval client, which streams recorded questions as 20 ms PCM16 chunks at 16 kHz. In <code>local</code> mode it is the built-in mic client.",
+    data: "out: <code>input_audio_buffer.append</code> (base64 PCM16) · in: <code>response.output_audio.delta</code> + text events",
+    code: [R("evals/big_bench_audio/runner.py:64", "chunk_ms: int = 20"), R("api/openai_realtime/audio_client.py:60", "class RealtimeAudioClientConfig")] },
+  router: { t: "Router + RealtimeService", d: "FastAPI/uvicorn on one asyncio thread. It decodes client audio onto the input queue. A send loop drains the audio queue and the event queue back to the client. Through <code>RealtimeService</code>, it also adds the user message to the chat and starts the LLM request.",
+    data: "WebSocket <code>/v1/realtime</code> (or WebRTC <code>/v1/realtime/calls</code>)",
+    code: [R("api/openai_realtime/websocket_router.py:640", "app.websocket("), R("api/openai_realtime/websocket_router.py:912", "async def _send_loop_for"), R("api/openai_realtime/service.py:894", "def _on_transcription_completed")] },
+  vad: { t: "VADHandler", d: "Scores each 32 ms chunk with Silero. Decides when speech starts and ends, runs Smart Turn on the finished segment, and emits one audio segment per turn.",
+    data: "in: <code>(bytes, RuntimeConfig)</code> 512 × int16 @16 kHz · out: <code>VADAudio</code> (float32 numpy, 16 kHz)",
+    code: [R("VAD/vad_handler.py:58", "class VADHandler"), R("VAD/vad_handler.py:560", "def process")] },
+  stt: { t: "ParakeetTDTSTTHandler", d: "Turns the segment into text on the GPU. While the user speaks, it also sends live partial transcripts.",
+    data: "in: <code>VADAudio</code> · out: <code>Transcription</code> (+ <code>PartialTranscription</code>)",
+    code: [R("STT/parakeet_tdt_handler.py:43", "class ParakeetTDTSTTHandler"), R("STT/parakeet_tdt_handler.py:181", "def process")] },
+  notif: { t: "TranscriptionNotifier", d: "Turns the final transcript into a <code>TranscriptionCompletedEvent</code> for the router. It sends <b>nothing</b> to the LLM. The router starts the LLM request.",
+    data: "in: <code>Transcription</code> · out: event on <code>text_output_queue</code>",
+    code: [R("STT/transcription_notifier.py:42", "def process"), R("STT/transcription_notifier.py:97", "TranscriptionCompletedEvent(")] },
+  llm: { t: "LanguageModelHandler", d: "Runs transformers <code>generate</code> on a second thread and reads tokens from a <code>TextIteratorStreamer</code>. It splits the text into sentences and yields a chunk every 3 sentences.",
+    data: "in: <code>GenerateResponseRequest</code> · out: <code>LLMResponseChunk</code>, <code>TokenUsage</code>, <code>EndOfResponse</code>",
+    code: [R("LLM/language_model.py:809", "class LanguageModelHandler"), R("LLM/language_model.py:608", "def process")] },
+  proc: { t: "LMOutputProcessor", d: "Forwards each text chunk two ways: as a text event for the client and as a <code>TTSInput</code> for TTS. It does <b>not</b> split sentences. The LLM handler already did that.",
+    data: "in: <code>LLMResponseChunk</code> · out: <code>TTSInput</code>, <code>EndOfResponse</code>",
+    code: [R("LLM/lm_output_processor.py:45", "class LMOutputProcessor"), R("LLM/lm_output_processor.py:135", "def process")] },
+  tts: { t: "Qwen3TTSHandler", d: "Streams speech for each text chunk. The model output is resampled to 16 kHz, converted to int16 and cut into 512-sample blocks.",
+    data: "in: <code>TTSInput</code> · out: <code>AudioOutput</code> (512 × int16 @16 kHz = 32 ms)",
+    code: [R("TTS/qwen3_tts_handler.py:95", "class Qwen3TTSHandler"), R("TTS/qwen3_tts_handler.py:702", "def _stream")] },
+  m_vad: { t: "Silero VAD + Smart Turn v3.2", d: "Silero is loaded via torch.hub. Smart Turn v3.2 runs as an ONNX model on the CPU, on the last 8 s of audio.", data: "CPU", code: [R("VAD/vad_handler.py:151", "torch.hub.load"), R("VAD/smart_turn.py:20", "MODEL_REPO_ID")] },
+  m_stt: { t: "nvidia/parakeet-tdt-0.6b-v3", d: "Loaded through nano-parakeet on CUDA. WER 1.82% on 100 LibriSpeech test-clean utterances.", data: "GPU", code: [R("STT/parakeet_tdt_handler.py:152", "from_pretrained")] },
+  m_llm: { t: "Qwen/Qwen3.5-0.8B (Stage 0 swap)", d: "The default is Qwen/Qwen3.5-4B, which needs about 24 GB. The shared GPU had at most 19 GiB free, so Stage 0 used 0.8B. The 4B latency is not measured.", data: "GPU, float16", code: [R("arguments_classes/language_model_base_arguments.py:7", "Qwen/Qwen3.5-4B"), R("LLM/language_model.py:836", "AutoModelForCausalLM.from_pretrained")] },
+  m_tts: { t: "Qwen3-TTS 1.7B CustomVoice (GGML)", d: "faster-qwen3-tts with the GGML backend and a BF16 GGUF talker. Streams 8 codec tokens (about 640 ms of audio) per model chunk.", data: "GPU", code: [R("TTS/qwen3_tts_handler.py:221", "_setup_faster"), R("TTS/qwen3_tts_handler.py:52", "DEFAULT_FASTER_STREAMING_CHUNK_SIZE = 8")] },
+};
+function cardHTML(o) {
+  return "<h3>" + o.t + "</h3><p>" + o.d + "</p><dl class='kv'><dt>Data</dt><dd>" + o.data + "</dd><dt>Code</dt><dd>" + o.code.join(" ") + "</dd></dl>";
+}
+(function bigPicture() {
+  const s = document.getElementById("bigpic"); defs(s);
+  el("rect", { x: 220, y: 20, width: 1205, height: 590, rx: 14, class: "zone" }, s);
+  label(s, 238, 44, "speech-to-speech serve  (one process, one pipeline unit)", "zl", "start");
+  const X = [240, 440, 640, 840, 1060, 1260], W = 150, Y = 210, H = 80;
+  // models row
+  const mods = [["m_vad", 0, "Silero VAD", "+ Smart Turn · CPU"], ["m_stt", 1, "Parakeet 0.6B", "GPU"], ["m_llm", 3, "Qwen3.5-0.8B", "GPU · swap of 4B"], ["m_tts", 5, "Qwen3-TTS 1.7B", "GPU · GGML"]];
+  for (const [id, k, t, sub] of mods) {
+    box(s, id, X[k] - 8, 66, W + 16, 64, t, sub, "mdl");
+    el("path", { d: `M${X[k] + W / 2},130 L${X[k] + W / 2},${Y}`, class: "edge ml" }, s);
+  }
+  const th = [["vad", 0, "VADHandler", ["thread"]], ["stt", 1, "Parakeet STT", ["thread"]], ["notif", 2, "Transcription", ["Notifier · thread"]], ["llm", 3, "LLM handler", ["thread", "+ generate thread"]], ["proc", 4, "LMOutput", ["Processor · thread"]], ["tts", 5, "Qwen3 TTS", ["thread"]]];
+  for (const [id, k, t, sub] of th) box(s, id, X[k], Y, id === "llm" ? W + 20 : W, H, t, sub);
+  box(s, "router", 240, 440, 1170, 80, "Router  ·  FastAPI / uvicorn asyncio thread  ·  RealtimeService", "decodes audio in · send loop out · adds chat items · starts LLM requests", "svc");
+  box(s, "client", 30, 440, 160, 80, "Client", ["eval / mic / SDK"], "ext");
+  // horizontal queues: the gaps between handlers are narrower than the queue names, so each pill sits above its gap with a leader down to the arrow
+  const queue = (id, edgeId, x0, x1, name) => {
+    const x = (x0 + x1) / 2;
+    edge(s, edgeId, `M${x0},250 L${x1 - 4},250`);
+    el("path", { id: s.id + "-ql-" + id, d: `M${x},198 L${x},250`, class: "qlead" }, s);
+    pill(s, id, x, 186, name);
+  };
+  queue("sp", "e1", X[0] + W, X[1], "spoken_prompt");
+  queue("so", "e2", X[1] + W, X[2], "stt_output");
+  queue("lr", "e3", X[3] + W + 20, X[4], "lm_response");
+  queue("lp", "e4", X[4] + W, X[5], "lm_processed");
+  // vertical
+  edge(s, "in", `M370,440 L370,${Y + H + 4}`); pill(s, "ra", 370, 372, "recv_audio_chunks");
+  edge(s, "ev1", `M270,${Y + H} L270,436`, "ev");
+  edge(s, "ev2", `M${X[2] + 75},${Y + H} L${X[2] + 75},436`, "ev"); pill(s, "to", X[2] + 75, 372, "text_output (events)");
+  edge(s, "ev3", `M${X[4] + 75},${Y + H} L${X[4] + 75},436`, "ev");
+  edge(s, "rq", `M${X[3] + 85},440 L${X[3] + 85},${Y + H + 4}`); pill(s, "tp", X[3] + 85, 372, "text_prompt");
+  edge(s, "out", `M${X[5] + 75},${Y + H} L${X[5] + 75},436`); pill(s, "sa", X[5] + 75, 372, "send_audio_chunks");
+  edge(s, "c1", "M190,468 L236,468"); edge(s, "c2", "M240,496 L194,496");
+  label(s, 110, 550, "WebSocket", "t2"); label(s, 110, 568, "/v1/realtime", "tm");
+  label(s, 830, 580, "Same thread loop in every handler: queue_in.get → process() → queue_out.put", "t2");
+  const card = document.getElementById("bp-card");
+  s.querySelectorAll(".node").forEach(g => {
+    const show = () => { s.querySelectorAll(".node").forEach(n => n.classList.toggle("sel", n === g)); card.innerHTML = cardHTML(BP[g.dataset.id]); };
+    g.addEventListener("click", show);
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(); } });
+  });
+})();
+
+// ---------- flows ----------
+// step fields: on (node ids), go (edge id to animate), q (queue pill id), t (title), d (what happens),
+// data, where (thread / queue), code (citations), time (+ tag), set ({nodeId: [sub lines]} to relabel)
+const FLOWS = {};
+
+FLOWS.startup = {
+  h: 470,
+  build(s) {
+    const B = (id, x, y, t, sub) => box(s, id, x, y, 210, 92, t, sub);
+    B("cli", 20, 40, "CLI", ["speech-to-speech serve", "cli.main"]);
+    B("build", 270, 40, "Build pipeline", ["8 queues, 1 unit", "_build_pipeline_unit"]);
+    B("vad", 520, 40, "VAD setup", ["Smart Turn ONNX", "+ Silero (torch.hub)"]);
+    B("stt", 770, 40, "STT setup", ["Parakeet TDT 0.6B", "load + warmup"]);
+    B("llm", 770, 230, "LLM setup", ["Qwen3.5-0.8B", "load + warmup"]);
+    B("tts", 520, 230, "TTS setup", ["Qwen3-TTS GGML", "load + warmup"]);
+    B("threads", 270, 230, "Start threads", ["ThreadManager.start", "1 thread per handler"]);
+    B("server", 20, 230, "Server up", ["uvicorn :8765", "/v1/realtime"]);
+    box(s, "client", 20, 380, 460, 70, "Client connects", ["session.update: silence 900 ms (eval)"], "ext");
+    edge(s, "e1", "M230,86 L266,86"); edge(s, "e2", "M480,86 L516,86"); edge(s, "e3", "M730,86 L766,86");
+    edge(s, "e4", "M875,132 L875,226"); edge(s, "e5", "M770,276 L734,276"); edge(s, "e6", "M520,276 L484,276");
+    edge(s, "e7", "M270,276 L234,276"); edge(s, "e8", "M125,322 L125,376");
+    label(s, 520, 410, "main thread: models load one by one", "t2", "start");
+    label(s, 520, 432, "(BaseHandler.__init__ calls setup())", "t2", "start");
+  },
+  steps: [
+    { on: ["cli"], t: "Run the command", d: "The eval spawned <code>speech-to-speech serve --stt parakeet-tdt --tts qwen3 --model_name Qwen/Qwen3.5-0.8B</code>. <code>main</code> picks the <code>serve</code> subcommand and parses every flag.",
+      data: "CLI flags → dataclass arguments", where: "main thread", code: [R("cli.py:265", "def main"), R("s2s_pipeline.py:831", "def run_pipeline_command")], time: "spawned 13:44:02 " + M },
+    { on: ["build"], go: "e1", t: "Make the queues", d: "<code>build_pipeline</code> builds one isolated pipeline unit. It creates 8 queues, then calls <code>_build_handlers</code>. Each handler's <code>__init__</code> calls <code>setup()</code>, and that is where the model loads.",
+      data: "8 × <code>queue.Queue</code> (two are <code>NotifyingQueue</code> that wake the send loop)", where: "main thread", code: [R("s2s_pipeline.py:739", "def build_pipeline"), R("s2s_pipeline.py:624", "recv_audio_chunks_queue: Queue"), R("baseHandler.py:54", "self.setup(")], time: "&lt; 1 s " + I },
+    { on: ["vad"], go: "e2", t: "Load VAD models", d: "Smart Turn v3.2 is downloaded from the Hub and opened with onnxruntime on the CPU. Silero comes from <code>torch.hub</code>.",
+      data: "ONNX file <code>smart-turn-v3.2-cpu.onnx</code>; Silero JIT model", where: "main thread", code: [R("VAD/smart_turn.py:97", "hf_hub_download"), R("VAD/smart_turn.py:69", "InferenceSession"), R("VAD/vad_handler.py:151", "torch.hub.load")], time: "Smart Turn ready at 13:44:15.5; Silero ≈ 5.4 s incl. download " + M },
+    { on: ["stt"], go: "e3", t: "Load and warm STT", d: "Parakeet TDT loads through nano-parakeet on CUDA. Warmup transcribes 1 s of silence, so the first real turn doesn't pay for CUDA start-up.",
+      data: "1 s float32 zeros @16 kHz", where: "main thread · GPU", code: [R("STT/parakeet_tdt_handler.py:152", "from_pretrained"), R("STT/parakeet_tdt_handler.py:160", "def warmup")], time: "load 17.5 s (incl. download), warmup 0.13 s " + M },
+    { on: ["llm"], go: "e4", t: "Load and warm the LLM", d: "transformers <code>AutoModelForCausalLM</code> in float16, plus a <code>TextIteratorStreamer</code> for token streaming. Warmup runs 2 short generations.",
+      data: "weights 320 tensors; tokenizer", where: "main thread · GPU", code: [R("LLM/language_model.py:836", "AutoModelForCausalLM.from_pretrained"), R("LLM/language_model.py:842", "TextIteratorStreamer("), R("LLM/language_model.py:961", "def warmup")], time: "load 5.6 s, warmup 0.70 s " + M },
+    { on: ["tts"], go: "e5", t: "Load and warm TTS", d: "FasterQwen3TTS with the GGML backend and a BF16 GGUF talker and codec. This is the slowest step on first launch because of the GGUF download.",
+      data: "GGUF talker + tokenizer", where: "main thread · GPU", code: [R("TTS/qwen3_tts_handler.py:221", "_setup_faster"), R("TTS/qwen3_tts_handler.py:562", "def warmup")], time: "150 s (2 min 18 s of it is download); warmup 0.88 s, first audio 0.47 s " + M },
+    { on: ["threads"], go: "e6", t: "Start one thread per handler", d: "<code>ThreadManager.start</code> starts a non-daemon <code>threading.Thread(target=handler.run)</code> for each handler and one for the server.",
+      data: "—", where: "6 handler threads + server thread", code: [R("utils/thread_manager.py:20", "threading.Thread(target=handler.run)"), R("s2s_pipeline.py:891", "start()")], time: "&lt; 0.1 s " + I },
+    { on: ["server"], go: "e7", t: "Server listening", d: "uvicorn serves FastAPI on <code>ws://127.0.0.1:8765/v1/realtime</code>. From spawn to this log line took 3 min 18 s, mostly downloads.",
+      data: "—", where: "server thread (asyncio)", code: [R("api/openai_realtime/server.py:44", "OpenAI Realtime API starting")], time: "13:47:20.6 → total 3 min 18 s " + M },
+    { on: ["client"], go: "e8", t: "Client connects", d: "The eval client connects, then sends <code>session.update</code> with <code>silence_duration_ms: 900</code> and <code>interrupt_response: true</code>. The VAD applies the new silence time for this session.",
+      data: "JSON <code>session.update</code>", where: "server thread → VAD state", code: [R("api/openai_realtime/websocket_router.py:640", "app.websocket("), R("evals/big_bench_audio/runner.py:67", "silence_duration_ms: int = 900"), R("VAD/vad_handler.py:237", "silence_duration_ms")], time: "log: “VAD silence duration updated to 900ms” " + M },
+  ]
+};
+
+function turnLayout(s, withHist) {
+  box(s, "client", 20, 210, 120, 90, "Client", ["eval / mic"], "ext");
+  box(s, "router", 180, 40, 150, 440, "Router", ["asyncio thread", "+ RealtimeService"], "svc");
+  box(s, "vad", 390, 60, 170, 76, "VAD", ["Silero + Smart Turn"]);
+  box(s, "stt", 600, 60, 170, 76, "STT", ["Parakeet TDT"]);
+  box(s, "notif", 810, 60, 170, 76, "Notifier", ["transcript event"]);
+  box(s, "llm", 810, 340, 170, 76, "LLM", ["Qwen3.5-0.8B"]);
+  box(s, "proc", 600, 340, 170, 76, "LMOutput", ["Processor"]);
+  box(s, "tts", 390, 340, 170, 76, "TTS", ["Qwen3-TTS"]);
+  edge(s, "c-r", "M140,240 L176,240");
+  edge(s, "r-v", "M330,98 L386,98"); pill(s, "in", 358, 160, "recv_audio");
+  edge(s, "v-s", "M560,98 L596,98"); pill(s, "sp", 580, 160, "spoken_prompt");
+  edge(s, "s-n", "M770,98 L806,98"); pill(s, "so", 790, 190, "stt_output");
+  edge(s, "n-r", "M895,60 L895,24 L255,24 L255,36", "ev"); pill(s, "to", 575, 24, "text_output (events)");
+  edge(s, "r-l", "M255,480 L255,500 L895,500 L895,420"); pill(s, "tp", 575, 500, "text_prompt");
+  edge(s, "l-p", "M810,378 L774,378"); pill(s, "lr", 790, 310, "lm_response");
+  edge(s, "p-t", "M600,378 L564,378"); pill(s, "lp", 580, 450, "lm_processed");
+  edge(s, "t-r", "M390,378 L334,378"); pill(s, "sa", 358, 300, "send_audio");
+  edge(s, "r-c", "M180,280 L144,280");
+  if (withHist) box(s, "chat", 20, 340, 140, 76, "Chat", ["per session"], "mdl");
+}
+
+FLOWS.turn = {
+  h: 520,
+  build(s) { turnLayout(s); },
+  steps: [
+    { on: ["client"], t: "User speaks", d: "The eval client streams the question at real time (speed 1) as 20 ms chunks. Each chunk is a base64 <code>input_audio_buffer.append</code> event. After the question it sends 2 s of zeros.",
+      data: "PCM16 mono 16 kHz, 640 bytes per 20 ms", where: "client process", code: [R("evals/big_bench_audio/runner.py:64", "chunk_ms: int = 20"), R("evals/big_bench_audio/runner.py:65", "trailing_silence_ms: int = 2000"), R("evals/big_bench_audio/runner.py:166", "capture.audio_end_at = time.monotonic()")], time: "client clock starts at end of question audio " + M },
+    { on: ["router"], go: "c-r", q: "in", t: "Router re-cuts the audio", d: "<code>_dispatch_client_event</code> decodes the base64. <code>append_pcm</code> resamples to 16 kHz if needed and re-cuts the audio into 512-sample chunks. Each chunk goes on the input queue with the session config.",
+      data: "<code>(bytes, RuntimeConfig)</code>: 512 × int16 = 1024 B = 32 ms", where: "asyncio thread → <code>recv_audio_chunks_queue</code>", code: [R("api/openai_realtime/websocket_router.py:401", "async def _dispatch_client_event"), R("api/openai_realtime/handlers/audio.py:309", "def append_pcm"), R("api/openai_realtime/handlers/audio.py:37", "CHUNK_SAMPLES = 512"), R("api/openai_realtime/websocket_router.py:448", "unit.input_queue.put((chunk, rt_cfg))")], time: "≈ 0 " + I },
+    { on: ["vad"], go: "r-v", q: "in", t: "VAD hears speech", d: "For every chunk, Silero gives a speech probability. Speech is confirmed after 384 ms above threshold 0.6. VAD then puts <code>SpeechStartedEvent</code> on the event queue, and the client gets <code>input_audio_buffer.speech_started</code>.",
+      data: "int16 → float32 tensor, 512 samples", where: "VAD thread", code: [R("VAD/vad_handler.py:560", "def process"), R("VAD/vad_handler.py:573", "int2float"), R("arguments_classes/vad_arguments.py:40", "min_speech_ms"), R("VAD/vad_handler.py:637", "SpeechStartedEvent(")], time: "per chunk, real time " + M },
+    { on: ["vad"], t: "VAD decides the turn ended", d: "After 900 ms of quiet chunks (the eval's setting), the turn ends. Smart Turn checks the last 8 s of audio. “Complete” releases the turn now. “Incomplete” holds it 600 ms more. Details: <a href='#turnend'>flow 4</a>.",
+      data: "Smart Turn input: last 8 s, 16 kHz", where: "VAD thread", code: [R("VAD/vad_iterator.py:171", "self.current_sample - self.temp_end < self.min_silence_samples"), R("VAD/vad_handler.py:518", "def _smart_turn_timing_ms"), R("VAD/vad_handler.py:844", "tracker.vad_decision_s")], time: "vad_decision 0.96 s + Smart Turn 0.06 s (p50) " + M },
+    { on: ["stt"], go: "v-s", q: "sp", t: "STT transcribes", d: "VAD yields one <code>VADAudio</code> with the whole utterance (plus 500 ms padding). Parakeet transcribes it on the GPU.",
+      data: "<code>VADAudio</code>: float32 numpy @16 kHz, mode=final → <code>Transcription(text)</code>", where: "<code>spoken_prompt_queue</code> → STT thread", code: [R("VAD/vad_handler.py:880", "yield VADAudio("), R("pipeline/messages.py:49", "class VADAudio"), R("STT/parakeet_tdt_handler.py:181", "def process"), R("pipeline/messages.py:78", "class Transcription")], time: "stt 0.30 s p50 / 0.97 s p90 " + M + " (question 3: 0.21 s)" },
+    { on: ["notif"], go: "s-n", q: "so", t: "Notifier publishes the transcript", d: "The notifier turns the final text into <code>TranscriptionCompletedEvent</code> on the event queue. It yields nothing to the LLM queue.",
+      data: "event with <code>transcript</code>, <code>turn_id</code>, <code>speech_stopped_at_s</code>", where: "<code>stt_output_queue</code> → Notifier thread → <code>text_output_queue</code>", code: [R("STT/transcription_notifier.py:42", "def process"), R("STT/transcription_notifier.py:97", "TranscriptionCompletedEvent(")], time: "≈ 1 ms (question 3 log) " + M },
+    { on: ["router"], go: "n-r", q: "to", t: "Router starts the reply", d: "The send loop reads the event. <code>_on_transcription_completed</code> adds the user message to this session's <code>Chat</code>, builds a <code>GenerateResponseRequest</code>, and puts it on the LLM queue. The client gets the transcript.",
+      data: "<code>GenerateResponseRequest(runtime_config incl. chat, turn_id, speech_stopped_at_s)</code>", where: "asyncio thread → <code>text_prompt_queue</code>", code: [R("api/openai_realtime/websocket_router.py:945", "unit.text_output_queue.get_nowait()"), R("api/openai_realtime/service.py:894", "def _on_transcription_completed"), R("api/openai_realtime/service.py:927", "cfg.chat.add_item(user_message)"), R("api/openai_realtime/service.py:955", "queue.put(request)")], time: "≈ 0 " + I },
+    { on: ["llm"], go: "r-l", q: "tp", t: "LLM streams tokens", d: "The handler copies the chat, starts <code>generate</code> on a second thread, and reads tokens from the streamer. It cuts the text into sentences and yields a chunk once 3 sentences are ready. <b>This is the biggest wait.</b>",
+      data: "prompt 460–549 tokens → <code>LLMResponseChunk(text)</code>", where: "LLM thread + generate thread → <code>lm_response_queue</code>", code: [R("LLM/language_model.py:608", "def process"), R("LLM/language_model.py:917", "Thread(target=_locked_pipe)"), R("LLM/language_model.py:451", "sent_tokenize_preserving_markdown_code")], time: "llm_first_tts 1.40 s p50 / 2.69 s p90 " + M + " (question 3: 0.78 s)" },
+    { on: ["proc"], go: "l-p", q: "lr", t: "Output processor forwards", d: "Each text part becomes an <code>AssistantOutputEvent</code> (text for the client) and a <code>TTSInput</code> (text for TTS).",
+      data: "<code>TTSInput(text, language_code, response_key)</code>", where: "LMOutputProcessor thread → <code>lm_processed_queue</code>", code: [R("LLM/lm_output_processor.py:135", "def process")], time: "ms " + I },
+    { on: ["tts"], go: "p-t", q: "lp", t: "TTS makes the first audio", d: "Qwen3-TTS streams audio. The handler resamples it to 16 kHz, converts it to int16, and cuts 512-sample blocks. <code>BaseHandler</code> wraps each block as <code>AudioOutput</code>.",
+      data: "<code>AudioOutput</code>: 512 × int16 @16 kHz = 32 ms", where: "TTS thread → <code>send_audio_chunks_queue</code>", code: [R("TTS/qwen3_tts_handler.py:829", "def process"), R("TTS/qwen3_tts_handler.py:717", "PCMBlockBuffer(self.blocksize)"), R("baseHandler.py:110", "AudioOutput(")], time: "tts_ttfa 0.34 s p50 / 0.40 s p90 " + M },
+    { on: ["router"], go: "t-r", q: "sa", t: "Send loop ships audio", d: "The send loop takes blocks off the audio queue, batches up to 6400 bytes (200 ms), base64-encodes them, and sends <code>response.output_audio.delta</code>. The server's <code>e2e</code> clock stops at the first yielded TTS block.",
+      data: "JSON event, base64 PCM16 (16 kHz unless the client asked for 24 kHz)", where: "asyncio thread", code: [R("api/openai_realtime/websocket_router.py:1051", "unit.output_queue.get_nowait()"), R("api/openai_realtime/websocket_router.py:74", "MAX_AUDIO_BATCH_BYTES"), R("api/openai_realtime/handlers/audio.py:563", "ResponseAudioDeltaEvent("), R("pipeline/turn_latency.py:559", "def first_yield")], time: "server e2e 3.17 s p50 / 4.85 s p90 " + M },
+    { on: ["client"], go: "r-c", t: "First audio at the client", d: "The client stamps <code>first_audio_at</code>. ttfb = first audio − end of question audio. LLM and TTS keep streaming the rest. TTS runs 2.27× faster than real time (p50), so playback can keep up.",
+      data: "<code>ttfb_s = first_audio_at − audio_end_at</code>", where: "client process", code: [R("evals/big_bench_audio/runner.py:248", "response.first_audio_at = time.monotonic()"), R("evals/big_bench_audio/runner.py:349", "result.ttfb_s = last.first_audio_at - capture.audio_end_at")], time: "ttfb 2.89 s p50 / 4.43 s p90 " + M },
+    { on: ["llm", "proc", "tts", "router"], t: "Reply finishes", d: "The LLM yields <code>TokenUsage</code> and <code>EndOfResponse</code>. TTS answers with <code>AUDIO_RESPONSE_DONE</code>. The router sends <code>response.done</code>, keeps the reply in the chat, and logs the latency line.",
+      data: "<code>EndOfResponse</code>, <code>b\"__RESPONSE_DONE__\"</code>", where: "all threads", code: [R("pipeline/messages.py:202", "class EndOfResponse"), R("TTS/qwen3_tts_handler.py:839", "AUDIO_RESPONSE_DONE")], time: "full reply (llm) 2.42 s p50 " + M },
+  ]
+};
+
+FLOWS.stream = {
+  h: 400,
+  build(s) {
+    const B = (id, x, y, t, sub, k) => box(s, id, x, y, 170, 84, t, sub, k);
+    B("gen", 20, 40, "generate()", ["own thread", "1 token at a time"]);
+    B("streamer", 215, 40, "Streamer", ["TextIteratorStreamer", "timeout 1 s"]);
+    B("split", 410, 40, "Sentence cut", ["NLTK sent_tokenize", "batch: 0 / 3"]);
+    B("chunk", 605, 40, "LLM chunk", ["LLMResponseChunk", "→ lm_response"]);
+    B("proc", 800, 40, "LMOutput", ["Processor", "→ TTSInput"]);
+    B("tts", 800, 250, "Qwen3-TTS", ["8 codec tokens", "≈ 640 ms audio"]);
+    B("pcm", 605, 250, "To pipeline PCM", ["resample → 16 kHz", "float32 → int16"]);
+    B("blocks", 410, 250, "PCMBlockBuffer", ["512 samples", "= 32 ms, 1024 B"]);
+    B("send", 215, 250, "Send loop", ["batch ≤ 6400 B", "= 200 ms"]);
+    B("client", 20, 250, "Client", ["output_audio.delta", "base64"], "ext");
+    edge(s, "a1", "M190,82 L211,82"); edge(s, "a2", "M385,82 L406,82"); edge(s, "a3", "M580,82 L601,82"); edge(s, "a4", "M775,82 L796,82");
+    edge(s, "a5", "M885,124 L885,246"); edge(s, "a6", "M800,292 L779,292"); edge(s, "a7", "M605,292 L584,292"); edge(s, "a8", "M410,292 L389,292"); edge(s, "a9", "M215,292 L194,292");
+    label(s, 500, 172, "LLM side: text", "zl"); label(s, 500, 372, "TTS side: audio", "zl");
+  },
+  steps: [
+    { on: ["gen"], t: "Tokens are generated", d: "transformers <code>pipeline</code> runs on its own thread, because <code>generate</code> blocks. A stop criterion lets an interruption end it early.",
+      data: "token ids → text pieces", where: "generate thread", code: [R("LLM/language_model.py:917", "Thread(target=_locked_pipe)"), R("LLM/language_model.py:122", "class _CancelCriteria")], time: "first token: not logged (TTFT is internal) " + NM },
+    { on: ["streamer"], go: "a1", t: "Handler reads the stream", d: "<code>_stream_tokens</code> calls <code>next()</code> on the streamer. Each new piece is appended to the printable text. Every token also checks for cancellation.",
+      data: "str pieces", where: "LLM handler thread", code: [R("LLM/language_model.py:842", "TextIteratorStreamer("), R("LLM/language_model.py:521", "def _stream_tokens"), R("LLM/language_model.py:501", "def _check_stop")], time: "per token " + I },
+    { on: ["split"], go: "a2", set: { split: ["NLTK sent_tokenize", "batch: 1 / 3"] }, t: "First sentence done", d: "NLTK splits the text. A finished sentence goes into <code>sentence_batch</code>. The unfinished last sentence stays in the buffer.",
+      data: "<code>ctx.sentence_batch: list[str]</code>", where: "LLM handler thread", code: [R("LLM/language_model.py:451", "sent_tokenize_preserving_markdown_code")], time: "—" },
+    { on: ["split"], set: { split: ["NLTK sent_tokenize", "batch: 2 / 3"] }, t: "Second sentence: still waiting", d: "With the default <code>--stream_batch_sentences 3</code>, nothing goes to TTS yet. This wait is part of the 1.40 s <code>llm_first_tts</code>.",
+      data: "2 sentences held", where: "LLM handler thread", code: [R("arguments_classes/language_model_base_arguments.py:26", "stream_batch_sentences")], time: "lever: set it to 1 " + I },
+    { on: ["chunk"], go: "a3", set: { split: ["NLTK sent_tokenize", "batch: 3 / 3 → flush"] }, t: "Third sentence: flush", d: "3 sentences are ready. The handler yields one <code>LLMResponseChunk</code> with the joined text. A short reply is flushed at the end even when it has fewer than 3 sentences.",
+      data: "<code>LLMResponseChunk(text, parts, response_key, cancel_generation)</code>", where: "→ <code>lm_response_queue</code>", code: [R("pipeline/messages.py:154", "class LLMResponseChunk"), R("LLM/language_model.py:194", "stream_batch_sentences: int = 3")], time: "llm_first_tts 1.40 s p50 " + M },
+    { on: ["proc"], go: "a4", t: "Text goes two ways", d: "The client gets the text as a transcript delta. TTS gets a <code>TTSInput</code>.",
+      data: "<code>AssistantOutputEvent</code> + <code>TTSInput(text)</code>", where: "LMOutputProcessor thread → <code>lm_processed_queue</code>", code: [R("LLM/lm_output_processor.py:135", "def process")], time: "ms " + I },
+    { on: ["tts"], go: "a5", t: "TTS synthesizes a chunk", d: "If more text is already queued, the handler merges it. With <code>non_streaming_mode=True</code> (default), the model pre-fills the whole text, then emits audio every 8 codec tokens.",
+      data: "float32 audio at the model's own rate", where: "TTS thread · GPU", code: [R("TTS/qwen3_tts_handler.py:768", "def _coalesce_pending_tts_input"), R("TTS/qwen3_tts_handler.py:130", "non_streaming_mode"), R("TTS/qwen3_tts_handler.py:52", "DEFAULT_FASTER_STREAMING_CHUNK_SIZE = 8")], time: "tts_ttfa 0.34 s p50 " + M },
+    { on: ["pcm"], go: "a6", t: "Convert to pipeline format", d: "The handler resamples to 16 kHz with <code>resample_poly</code>, clips to int16, and trims leading silence (keeping 40 ms).",
+      data: "int16 mono @16 kHz", where: "TTS thread", code: [R("TTS/qwen3_tts_handler.py:702", "def _stream"), R("TTS/qwen3_tts_handler.py:735", "_resample_to_pipeline_sr"), R("TTS/qwen3_tts_handler.py:736", "_to_int16")], time: "ms " + I },
+    { on: ["blocks"], go: "a7", t: "Cut into 512-sample blocks", d: "<code>PCMBlockBuffer</code> yields exact 512-sample blocks and flushes the short tail at the end. Each block is a separate queue item.",
+      data: "<code>AudioOutput(audio=512 × int16)</code>", where: "→ <code>send_audio_chunks_queue</code>", code: [R("TTS/pcm_blocks.py:6", "class PCMBlockBuffer"), R("TTS/qwen3_tts_handler.py:134", "blocksize: int = 512")], time: "32 ms of audio per block " + M },
+    { on: ["send"], go: "a8", t: "Batch and encode", d: "The send loop drains up to 6400 bytes (200 ms) into one event. It resamples only if the client asked for another rate, then base64-encodes.",
+      data: "<code>response.output_audio.delta</code>", where: "asyncio thread", code: [R("api/openai_realtime/websocket_router.py:74", "MAX_AUDIO_BATCH_BYTES"), R("api/openai_realtime/handlers/audio.py:525", "def encode_audio_chunk")], time: "—" },
+    { on: ["client", "gen", "tts"], go: "a9", t: "Play while the rest streams", d: "The client plays the first delta while the LLM writes the next 3 sentences and TTS speaks them. In Stage 0, the full LLM reply took 2.42 s p50, but first audio left the server at 3.17 s after speech end. Much of the reply was generated while earlier audio played.",
+      data: "audio deltas + text deltas", where: "all threads at once", code: [R("api/openai_realtime/handlers/audio.py:563", "ResponseAudioDeltaEvent(")], time: "TTS speed 2.27× real time p50 " + M },
+  ]
+};
+
+FLOWS.turnend = {
+  h: 470,
+  build(s) {
+    // a chunk strip: 32 ms chunks, speech then silence
+    const x0 = 40, cw = 12, n = 60, base = 230;
+    label(s, x0, 40, "Silero speech probability per 32 ms chunk", "zl", "start");
+    el("line", { x1: x0, y1: base - 0.6 * 150, x2: x0 + n * cw, y2: base - 0.6 * 150, stroke: "#0b57d0", "stroke-width": 2, "stroke-dasharray": "6 4" }, s);
+    label(s, x0 + n * cw + 6, base - 0.6 * 150 + 5, "0.60 start", "t2", "start");
+    el("line", { x1: x0, y1: base - 0.45 * 150, x2: x0 + n * cw, y2: base - 0.45 * 150, stroke: "#b3261e", "stroke-width": 2, "stroke-dasharray": "6 4" }, s);
+    label(s, x0 + n * cw + 6, base - 0.45 * 150 + 5, "0.45 end (thresh − 0.15)", "t2", "start");
+    for (let k = 0; k < n; k++) {
+      const p = k < 4 ? 0.05 : k < 26 ? 0.75 + 0.2 * Math.abs(Math.sin(k)) : 0.06 + 0.04 * Math.abs(Math.sin(k * 3));
+      el("rect", { x: x0 + k * cw + 1, y: base - p * 150, width: cw - 2, height: p * 150, fill: k < 26 && k >= 4 ? "#7aa2e8" : "#c7cbd2" }, s);
+    }
+    el("line", { x1: x0, y1: base, x2: x0 + n * cw, y2: base, stroke: "#111", "stroke-width": 2 }, s);
+    const mk = (id, k, t, sub, y) => {
+      const g = el("g", { id: s.id + "-" + id, class: "node", tabindex: 0 }, s); g.dataset.id = id;
+      el("title", {}, g, t);
+      el("line", { x1: x0 + k * cw, y1: 60, x2: x0 + k * cw, y2: y - 22, stroke: "#111", "stroke-width": 2 }, g);
+      el("rect", { x: x0 + k * cw - 78, y: y - 20, width: 156, height: 50, rx: 8 }, g);
+      el("text", { x: x0 + k * cw, y: y - 1, "text-anchor": "middle", class: "t1", style: "font-size:15px" }, g, t);
+      el("text", { x: x0 + k * cw, y: y + 18, "text-anchor": "middle", class: "t2" }, g, sub);
+    };
+    mk("start", 4, "speech start", "after 384 ms active", 280);
+    mk("temp", 26, "temp_end", "first quiet chunk", 350);
+    mk("last", 25, "last speech", "speech_end_at_s", 280);
+    mk("decide", 55, "VAD decision", "+0.96 s (eval)", 280);
+    box(s, "smart", 590, 370, 240, 70, "Smart Turn v3.2", ["ONNX CPU, 8 s · 62 ms"]);
+    box(s, "grace", 845, 250, 145, 80, "Reopen grace", ["complete:", "800 ms"]);
+    box(s, "hold", 845, 370, 145, 80, "Incomplete", ["+600 ms delay", "2 s grace"]);
+    box(s, "reopen", 20, 398, 300, 62, "User speaks again", ["in grace → same turn, rev+1"], "ext");
+    el("path", { d: `M${x0 + 26 * cw},324 L${x0 + 55 * cw},324`, stroke: "#b3261e", "stroke-width": 3, fill: "none" }, s);
+    label(s, x0 + 42 * cw, 344, "29 quiet chunks ≥ 900 ms", "t2");
+    edge(s, "e1", "M700,312 L700,366"); edge(s, "e2", "M830,390 L841,322"); edge(s, "e3", "M830,410 L841,410");
+  },
+  steps: [
+    { on: [], t: "One chunk at a time", d: "Every 32 ms chunk gets one Silero probability. Bars above the blue line count as speech.",
+      data: "512 × float32 @16 kHz → 1 probability", where: "VAD thread", code: [R("VAD/vad_iterator.py:116", "def __call__"), R("arguments_classes/vad_arguments.py:22", "thresh")], time: "real time " + M },
+    { on: ["start"], t: "Speech start", d: "Probability ≥ 0.6 starts a candidate. VAD confirms it and emits <code>speech_started</code> after 384 ms of active speech. This filters out coughs and clicks.",
+      data: "<code>SpeechStartedEvent(audio_start_ms, turn_id)</code>", where: "VAD → <code>text_output_queue</code>", code: [R("arguments_classes/vad_arguments.py:40", "min_speech_ms"), R("VAD/vad_handler.py:611", "is_triggered_now and not self._speech_started_emitted")], time: "—" },
+    { on: ["last", "temp"], t: "Quiet starts", d: "The first chunk below 0.45 sets <code>temp_end</code>. Any louder chunk resets it. The speech end is stamped one chunk earlier and later becomes the <code>e2e</code> clock's start.",
+      data: "<code>last_speech_end_sample = temp_end − 512</code>", where: "VAD thread", code: [R("VAD/vad_iterator.py:176", "last_speech_end_sample = self.temp_end - window_size_samples"), R("VAD/vad_handler.py:842", "speech_end_at_s = received_at_s")], time: "—" },
+    { on: ["decide"], t: "Silence long enough", d: "The turn ends when <code>current_sample − temp_end ≥ min_silence</code>. The default is only 64 ms, but the eval set 900 ms. 900 ms needs 29 more chunks after <code>temp_end</code>, plus the 1 chunk before it: 30 × 32 ms = <b>0.96 s</b>. That is why <code>vad_decision</code> is 0.96 s in all 40 turns.",
+      data: "whole utterance + 500 ms pad", where: "VAD thread", code: [R("VAD/vad_iterator.py:171", "self.current_sample - self.temp_end < self.min_silence_samples"), R("arguments_classes/vad_arguments.py:34", "min_silence_ms"), R("evals/big_bench_audio/runner.py:67", "silence_duration_ms: int = 900")], time: "vad_decision 0.96 s, p50 = p90 " + M },
+    { on: ["smart"], go: "e1", t: "Smart Turn checks the meaning", d: "Smart Turn v3.2 reads the last 8 s and returns P(turn complete). It never ends a turn by itself. It only sets how long to wait before replying.",
+      data: "Whisper features of 8 s audio → probability, threshold 0.5", where: "VAD thread · CPU ONNX", code: [R("VAD/smart_turn.py:130", "def predict"), R("VAD/vad_handler.py:518", "def _smart_turn_timing_ms"), R("arguments_classes/vad_arguments.py:110", "smart_turn_threshold")], time: "62 ms p50 (60 runs) " + M },
+    { on: ["grace"], go: "e2", t: "Complete → reply now, keep a grace", d: "STT and the LLM start right away. Their output is held for an 800 ms reopen grace, in case the user goes on. 50 of 60 Smart Turn calls in Stage 0 said “complete”.",
+      data: "output_hold_ms = 800", where: "SpeculativeTurnTracker", code: [R("arguments_classes/vad_arguments.py:80", "speculative_reopen_ms"), R("pipeline/speculative_turns.py:149", "def segment_finalized")], time: "hold 0 s p50 " + M },
+    { on: ["hold"], go: "e3", t: "Incomplete → wait longer", d: "Processing is delayed 600 ms, and the grace grows to 2000 ms. 10 of 60 calls said “incomplete”. 9 of 40 turns had a hold of 0.14–1.12 s.",
+      data: "processing_delay_ms = 600", where: "SpeculativeTurnTracker gate", code: [R("arguments_classes/vad_arguments.py:122", "smart_turn_incomplete_delay_ms"), R("arguments_classes/vad_arguments.py:116", "smart_turn_max_wait_ms"), R("pipeline/speculative_turns.py:433", "def _gate_locked")], time: "hold p90 0.60 s " + M },
+    { on: ["reopen"], t: "User continues: same turn, new revision", d: "If speech starts again inside the grace, the turn reopens as revision + 1. The old speculative reply is cancelled. The Stage 0 log shows 4 such cancels (“speech during pending response”). The cause was most likely a pause inside a recorded question " + I + ".",
+      data: "turn_id same, turn_revision + 1", where: "VAD + router", code: [R("pipeline/speculative_turns.py:132", "def speech_started"), R("api/openai_realtime/websocket_router.py:1020", "cancel_scope.cancel()")], time: "4 cancels in 40 questions " + M },
+  ]
+};
+
+FLOWS.barge = {
+  h: 520,
+  build(s) { turnLayout(s, true); edge(s, "h", "M90,336 L90,300", "ev"); },
+  steps: [
+    { on: ["tts", "router", "client"], t: "Assistant is speaking", d: "Audio blocks flow TTS → router → client. The client mic stays open: <code>local_audio_block_mic_during_playback</code> defaults to False “so barge-in works”. The server keeps feeding audio to VAD.",
+      data: "audio deltas out; mic chunks in", where: "TTS, asyncio threads", code: [R("arguments_classes/local_audio_arguments.py:40", "local_audio_block_mic_during_playback"), R("VAD/vad_handler.py:566", "should_listen.is_set")], time: "—" },
+    { on: ["vad"], go: "r-v", q: "in", t: "VAD confirms new speech", d: "The same 384 ms rule applies. <code>SpeechStartedEvent</code> has <code>interrupt_response=True</code> by default.",
+      data: "<code>SpeechStartedEvent(interrupt_response=True)</code>", where: "VAD thread → <code>text_output_queue</code>", code: [R("VAD/vad_handler.py:637", "SpeechStartedEvent("), R("pipeline/events.py:40", "class SpeechStartedEvent"), R("pipeline/events.py:46", "interrupt_response")], time: "≥ 384 ms of speech " + M },
+    { on: ["router"], go: "n-r", q: "to", t: "Router handles events first", d: "The send loop reads text events before audio. If the session allows it (<code>interrupt_response</code>, default True), the response is finished as <code>cancelled</code> with reason <code>turn_detected</code>.",
+      data: "<code>input_audio_buffer.speech_started</code> → client", where: "asyncio thread", code: [R("api/openai_realtime/websocket_router.py:934", "speech_started cancels active response"), R("api/openai_realtime/websocket_router.py:997", "interrupt_enabled ="), R("api/openai_realtime/handlers/audio.py:372", "def on_speech_started"), R("api/openai_realtime/handlers/audio.py:382", "finish_response(")], time: "—" },
+    { on: ["router"], t: "Cancel and flush", d: "<code>cancel_scope.cancel()</code> bumps a generation counter. The router empties the LLM request queue, the audio queue and the event queue, and drops any audio not yet sent.",
+      data: "generation n → n+1", where: "asyncio thread", code: [R("api/openai_realtime/websocket_router.py:1020", "cancel_scope.cancel()"), R("pipeline/cancel_scope.py:24", "def cancel"), R("api/openai_realtime/websocket_router.py:1012", "truncate_unplayed_audio")], time: "—" },
+    { on: ["llm"], t: "LLM stops", d: "<code>_check_stop</code> runs every token and sees the stale generation. A stopping criterion ends <code>generate</code>. Log: “LLM generation cancelled (interruption)”.",
+      data: "—", where: "LLM thread", code: [R("LLM/language_model.py:501", "def _check_stop"), R("LLM/language_model.py:509", "generation cancelled (interruption)")], time: NM },
+    { on: ["tts", "proc"], t: "Stale work is dropped", d: "Every handler drops inputs from an old generation before <code>process()</code>. TTS checks every block. The send loop drops any old audio that is left.",
+      data: "—", where: "all handler threads + send loop", code: [R("baseHandler.py:86", "cancel_scope.is_stale(cancel_generation)"), R("TTS/base_tts_handler.py:19", "def _is_stale"), R("api/openai_realtime/websocket_router.py:274", "def _generation_is_discardable")], time: NM },
+    { on: ["chat"], go: "h", t: "History keeps only what was heard", d: "The unfinished reply is rolled back. The router estimates the heard text from the samples played (whole words, in proportion) and adds only that part as the assistant message.",
+      data: "assistant item, <code>status=incomplete</code>", where: "asyncio thread → Chat", code: [R("api/openai_realtime/handlers/response.py:1182", "def finish_response"), R("api/openai_realtime/handlers/response.py:88", "def _heard_transcript"), R("LLM/chat.py:677", "def add_heard_assistant_message")], time: "—" },
+    { on: ["vad", "stt"], go: "v-s", q: "sp", t: "New turn proceeds", d: "The new speech goes on as a normal turn (<a href='#turn'>flow 2</a>). Stage 0 never talked over a playing reply, so <b>barge-in reaction time is not measured</b>. The 4 cancels in the log hit pending replies, not playing ones (see <a href='#turnend'>flow 4</a>, step 8).",
+      data: "—", where: "—", code: [R("api/openai_realtime/websocket_router.py:1030", "pending response")], time: NM },
+  ]
+};
+
+FLOWS.modes = {
+  h: 430,
+  build(s) {
+    el("rect", { x: 15, y: 20, width: 310, height: 390, rx: 12, class: "zone" }, s); label(s, 170, 46, "serve", "t1");
+    el("rect", { x: 345, y: 20, width: 310, height: 390, rx: 12, class: "zone" }, s); label(s, 500, 46, "local", "t1");
+    el("rect", { x: 675, y: 20, width: 310, height: 390, rx: 12, class: "zone" }, s); label(s, 830, 46, "talk", "t1");
+    box(s, "s_pipe", 40, 70, 260, 80, "Pipeline + server", ["models, 6 threads", "uvicorn :8765"]);
+    box(s, "s_ws", 40, 190, 120, 70, "WebSocket", ["/v1/realtime"], "svc");
+    box(s, "s_rtc", 180, 190, 120, 70, "WebRTC", ["POST …/calls"], "svc");
+    box(s, "s_cli", 40, 310, 260, 70, "Any Realtime client", ["eval, OpenAI SDK, browser"], "ext");
+    edge(s, "s1", "M100,306 L100,264"); edge(s, "s2", "M240,306 L240,264"); edge(s, "s3", "M170,190 L170,154");
+    box(s, "l_pipe", 370, 70, 260, 80, "Pipeline + server", ["host forced 127.0.0.1"]);
+    box(s, "l_cli", 370, 310, 260, 70, "RealtimeAudioClient", ["thread, sounddevice mic"]);
+    box(s, "l_ws", 430, 190, 140, 70, "WebSocket", ["loopback"], "svc");
+    edge(s, "l1", "M500,306 L500,264"); edge(s, "l2", "M500,190 L500,154");
+    box(s, "t_srv", 700, 70, 260, 80, "Remote server", ["already running serve"], "ext");
+    box(s, "t_ws", 760, 190, 140, 70, "WebSocket", ["--url"], "svc");
+    box(s, "t_cli", 700, 310, 260, 70, "Mic client only", ["no models loaded"]);
+    edge(s, "t1", "M830,306 L830,264"); edge(s, "t2", "M830,190 L830,154");
+  },
+  steps: [
+    { on: ["s_pipe"], t: "serve: the server alone", d: "Builds the pipeline unit(s) and a <code>RealtimeServer</code>. <code>--num_pipelines</code> sets the pool size: one isolated set of queues and threads per concurrent session. Stage 0 used this mode through the eval's <code>--spawn</code>.",
+      data: "—", where: "1 process", code: [R("s2s_pipeline.py:739", "def build_pipeline"), R("cli.py:18", "Command = Literal")], time: "start-up 3 min 18 s on first run " + M },
+    { on: ["s_ws", "s_cli"], go: "s1", t: "WebSocket transport", d: "The client sends base64 PCM16 in JSON events and gets audio deltas back. This is the path in all the other flows on this page.",
+      data: "JSON events; PCM16 16 kHz (or 24 kHz on request)", where: "asyncio thread", code: [R("api/openai_realtime/websocket_router.py:640", "app.websocket(")], time: "—" },
+    { on: ["s_rtc", "s_cli"], go: "s2", t: "WebRTC transport", d: "SDP offer to <code>POST /v1/realtime/calls</code>. Audio uses the media track, so <code>input_audio_buffer.append</code> is rejected and the router reports an error.",
+      data: "RTP audio → 16 kHz PCM", where: "asyncio thread", code: [R("api/openai_realtime/websocket_router.py:769", "/v1/realtime/calls")], time: NM },
+    { on: ["l_pipe", "l_cli", "l_ws"], go: "l1", t: "local: server + mic client in one process", d: "<code>build_local_pipeline</code> runs the same server on 127.0.0.1, plus a <code>RealtimeAudioClient</code> thread. The client opens <code>sounddevice</code> input and output streams and talks to the server over the loopback WebSocket. The pipeline is identical.",
+      data: "mic int16 mono 16 kHz, 1024-sample blocks", where: "same process, extra client thread", code: [R("s2s_pipeline.py:779", "def build_local_pipeline"), R("api/openai_realtime/audio_client.py:1239", "RawInputStream"), R("api/openai_realtime/audio_client.py:1249", "RawOutputStream")], time: NM },
+    { on: ["t_cli", "t_ws", "t_srv"], go: "t1", t: "talk: client only", d: "Only the mic client: it loads no models and connects to a server that is already running.",
+      data: "same events as local", where: "client process", code: [R("cli.py:18", "Command = Literal"), R("api/openai_realtime/audio_client.py:60", "class RealtimeAudioClientConfig")], time: "—" },
+  ]
+};
+
+FLOWS.history = {
+  h: 470,
+  build(s) {
+    box(s, "tr", 20, 40, 200, 80, "Final transcript", ["completed event"], "ext");
+    box(s, "svc", 260, 40, 220, 80, "RealtimeService", ["_on_transcription_completed"], "svc");
+    box(s, "chat", 520, 40, 220, 80, "Chat (per session)", ["size 30 user turns"], "mdl");
+    box(s, "copy", 780, 40, 200, 80, "LLM: chat copy", ["deep copy, then generate"]);
+    box(s, "prop", 780, 200, 200, 80, "ResponseHistory", ["proposal (provisional)"]);
+    box(s, "hh", 520, 200, 220, 80, "HistoryHandler", ["write → finalize"], "svc");
+    box(s, "trim", 520, 350, 220, 80, "Trim / compact", ["thread chat-compact"]);
+    box(s, "cut", 260, 200, 220, 80, "Interrupted?", ["rollback + heard text"], "svc");
+    edge(s, "e1", "M220,80 L256,80"); edge(s, "e2", "M480,80 L516,80"); edge(s, "e3", "M740,80 L776,80");
+    edge(s, "e4", "M880,120 L880,196"); edge(s, "e5", "M780,240 L744,240"); edge(s, "e6", "M630,200 L630,124");
+    edge(s, "e7", "M630,280 L630,346"); edge(s, "e8", "M520,240 L484,240"); edge(s, "e9", "M370,200 L370,160 L560,160 L560,124");
+  },
+  steps: [
+    { on: ["tr"], t: "A final transcript arrives", d: "History starts when the router reads the transcript event. Partial transcripts never enter the chat.",
+      data: "<code>transcript: str</code>", where: "asyncio thread", code: [R("STT/transcription_notifier.py:97", "TranscriptionCompletedEvent(")], time: "—" },
+    { on: ["svc"], go: "e1", t: "Add the user message", d: "The service appends a user message. If a reopened turn (revision + 1) revises its text, the old message is replaced instead of added twice. An empty transcript removes it.",
+      data: "Realtime conversation item (role=user)", where: "asyncio thread", code: [R("api/openai_realtime/service.py:894", "def _on_transcription_completed"), R("api/openai_realtime/service.py:927", "cfg.chat.add_item(user_message)")], time: "—" },
+    { on: ["chat"], go: "e2", t: "One Chat per session", d: "The service creates one <code>Chat</code> per connection. Its size counts <b>user turns</b> (default 30). The system message is kept separately from the turn buffer.",
+      data: "<code>buffer: list[item]</code> + <code>init_chat_message</code>", where: "shared object, lock-protected", code: [R("LLM/chat.py:132", "class Chat"), R("api/openai_realtime/service.py:483", "Chat(self._chat_size)"), R("arguments_classes/language_model_base_arguments.py:22", "chat_size")], time: "—" },
+    { on: ["copy"], go: "e3", t: "LLM works on a copy", d: "<code>process</code> deep-copies the chat before generating, so new speech that arrives meanwhile cannot change the prompt halfway through. The LLM never writes to the real chat.",
+      data: "full chat → chat template → prompt tokens", where: "LLM thread", code: [R("LLM/language_model.py:637", "copy(deep=True)")], time: "prompt 460–549 tokens in Stage 0 " + M },
+    { on: ["prop"], go: "e4", t: "Reply proposed, not committed", d: "When generation finishes and was not cancelled, the handler sends a <code>ResponseHistory</code> proposal with the reply items.",
+      data: "<code>ResponseHistory(items, after_item_id, complete)</code>", where: "LLM thread → queues", code: [R("LLM/language_model.py:743", "ResponseHistory.capture"), R("pipeline/history.py:15", "class ResponseHistory")], time: "—" },
+    { on: ["hh", "chat"], go: "e5", t: "Write, then finalize", d: "<code>HistoryHandler</code> is the only writer. It writes the reply as provisional items, then finalizes them on <code>response.done</code>.",
+      data: "assistant items", where: "asyncio thread", code: [R("api/openai_realtime/handlers/history.py:35", "class HistoryHandler"), R("LLM/chat.py:824", "def add_provisional_generation_items"), R("api/openai_realtime/handlers/history.py:88", "def finalize")], time: "—" },
+    { on: ["trim"], go: "e7", t: "Too long? Summarize old turns", d: "Above 30 user turns, the oldest turns are summarized on a background thread (<code>compact_history</code>, default on), using the same LLM. The hard cap is 2 × size: past it, the oldest turn is dropped.",
+      data: "<code>{user_summary, assistant_summary}</code> JSON", where: "thread <code>chat-compact</code>", code: [R("LLM/chat.py:488", "def trim_if_needed"), R("LLM/chat.py:1480", "def _compact_worker"), R("arguments_classes/language_model_base_arguments.py:40", "compact_history")], time: NM },
+    { on: ["cut", "chat"], go: "e9", t: "Interrupted reply: heard part only", d: "On barge-in, the provisional reply is rolled back and replaced by the words the user actually heard. The next turn then sees what the user really heard.",
+      data: "assistant item, <code>status=incomplete</code>", where: "asyncio thread", code: [R("LLM/chat.py:919", "def rollback_provisional_generation"), R("api/openai_realtime/handlers/response.py:1269", "add_heard_assistant_message")], time: "—" },
+  ]
+};
+
+// ---------- player engine ----------
+const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function makePlayer(host) {
+  const key = host.dataset.flow, F = FLOWS[key];
+  host.innerHTML =
+    '<div class="ctrl"><button type="button" class="primary" data-a="play">▶ Play</button>' +
+    '<button type="button" data-a="prev" aria-label="Previous step">◀ Back</button>' +
+    '<button type="button" data-a="next" aria-label="Next step">Next ▶</button>' +
+    '<button type="button" data-a="reset">Reset</button>' +
+    '<span class="count" aria-live="polite"></span></div>' +
+    '<div class="pgrid"><div><div class="fig"><svg id="f-' + key + '" viewBox="0 0 1000 ' + F.h + '" role="img" aria-label="' + key + ' flow"></svg></div>' +
+    '<div class="dots" style="margin-top:10px"></div></div>' +
+    '<div class="card step" aria-live="polite"></div></div>';
+  const svg = host.querySelector("svg"); defs(svg);
+  F.build(svg);
+  const packet = el("circle", { r: 9, cx: -40, cy: -40, class: "packet" }, svg);
+  const orig = {};
+  svg.querySelectorAll(".node").forEach(g => { orig[g.dataset.id] = [...g.querySelectorAll("text.t2")].map(t => t.textContent); });
+  const panel = host.querySelector(".step"), count = host.querySelector(".count"), dots = host.querySelector(".dots");
+  const playBtn = host.querySelector('[data-a="play"]');
+  F.steps.forEach((_, k) => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = k + 1; b.setAttribute("aria-label", "Step " + (k + 1));
+    b.onclick = () => { stop(); go(k); }; dots.appendChild(b);
+  });
+  let cur = -1, timer = null, raf = null;
+  function find(id) { return svg.querySelector("#" + svg.id + "-" + id); }
+  function render() {
+    const st = F.steps[cur];
+    host.classList.toggle("stepped", cur >= 0);
+    svg.querySelectorAll(".node").forEach(g => {
+      g.classList.toggle("on", !!st && st.on.includes(g.dataset.id));
+      const subs = (st && st.set && st.set[g.dataset.id]) || orig[g.dataset.id];
+      g.querySelectorAll("text.t2").forEach((t, k) => { if (subs[k] !== undefined) t.textContent = subs[k]; });
+    });
+    svg.querySelectorAll(".edge.on, .pill.on").forEach(e => {
+      e.classList.remove("on");
+      if (e.classList.contains("edge")) e.setAttribute("marker-end", "url(#" + svg.id + (e.classList.contains("ev") ? "-aEv)" : "-a)"));
+    });
+    [...dots.children].forEach((b, k) => { b.classList.toggle("cur", k === cur); b.classList.toggle("done", k < cur); });
+    count.textContent = "Step " + Math.max(cur + 1, 0) + " of " + F.steps.length;
+    if (raf) cancelAnimationFrame(raf);
+    if (!st) {
+      packet.setAttribute("cx", -40); packet.setAttribute("cy", -40);
+      panel.innerHTML = "<h3>Press ▶ Play, or step through</h3><p class='what'>Each step lights up one part. It shows what data moves, which thread and queue carry it, the code line, and what it cost in Stage 0.</p>";
+      return;
+    }
+    if (st.q) { const q = svg.querySelector("#" + svg.id + "-q-" + st.q); if (q) q.classList.add("on"); }
+    const path = st.go ? find(st.go) : null;
+    if (path) {
+      path.classList.add("on"); path.setAttribute("marker-end", "url(#" + svg.id + "-aOn)");
+      const L = path.getTotalLength(), t0 = performance.now(), dur = REDUCED ? 0 : 1100;
+      const tick = now => {
+        const f = dur ? Math.min(1, (now - t0) / dur) : 1, p = path.getPointAtLength(L * f);
+        packet.setAttribute("cx", p.x); packet.setAttribute("cy", p.y);
+        if (f < 1) raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+    } else if (st.on.length) {
+      const r = find(st.on[0]).querySelector("rect").getBBox();
+      packet.setAttribute("cx", r.x + r.width - 12); packet.setAttribute("cy", r.y + 12);
+    } else { packet.setAttribute("cx", -40); packet.setAttribute("cy", -40); }
+    panel.innerHTML = "<h3>" + (cur + 1) + ". " + st.t + "</h3><p class='what'>" + st.d + "</p><dl class='kv'>" +
+      "<dt>Data</dt><dd>" + st.data + "</dd><dt>Thread / queue</dt><dd>" + st.where + "</dd>" +
+      "<dt>Code</dt><dd>" + st.code.join(" ") + "</dd><dt>Time</dt><dd>" + st.time + "</dd></dl>";
+  }
+  function go(k) { cur = Math.max(-1, Math.min(F.steps.length - 1, k)); render(); }
+  function stop() { clearInterval(timer); timer = null; host.classList.remove("playing"); playBtn.textContent = "▶ Play"; }
+  function play() {
+    if (timer) return stop();
+    if (cur >= F.steps.length - 1) cur = -1;
+    host.classList.add("playing"); playBtn.textContent = "❚❚ Pause";
+    go(cur + 1);
+    timer = setInterval(() => { if (cur >= F.steps.length - 1) stop(); else go(cur + 1); }, 3600);
+  }
+  host.querySelector(".ctrl").addEventListener("click", e => {
+    const a = e.target.closest("button") && e.target.closest("button").dataset.a;
+    if (a === "play") play(); else if (a === "prev") { stop(); go(cur - 1); } else if (a === "next") { stop(); go(cur + 1); } else if (a === "reset") { stop(); go(-1); }
+  });
+  host.addEventListener("keydown", e => {
+    if (e.key === "ArrowRight") { stop(); go(cur + 1); e.preventDefault(); }
+    if (e.key === "ArrowLeft") { stop(); go(cur - 1); e.preventDefault(); }
+  });
+  svg.querySelectorAll(".node").forEach(g => {
+    const jump = () => { const k = F.steps.findIndex(st => st.on.includes(g.dataset.id)); if (k >= 0) { stop(); go(k); } };
+    g.addEventListener("click", jump);
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); jump(); } });
+  });
+  render();
+  return { play, stop, go, get step() { return cur; }, steps: F.steps.length };
+}
+window.PLAYERS = {};
+document.querySelectorAll(".player").forEach(h => { window.PLAYERS[h.dataset.flow] = makePlayer(h); });
+
+// ---------- waterfall ----------
+const WF = {
+  p50: { title: "Typical turn: Stage 0 p50 values on the server clock (0 = estimated end of speech)", bars: [
+      ["Wait for 900 ms silence", 0, 0.96, "m", "vad_decision"],
+      ["Smart Turn", 0.96, 0.06, "m", "62 ms p50"],
+      ["STT (Parakeet)", 1.02, 0.30, "m", "stt"],
+      ["LLM until first TTS text", 1.32, 1.40, "m", "llm_first_tts"],
+      ["TTS first audio", 2.72, 0.34, "m", "tts_ttfa"],
+      ["Handoffs + rounding", 3.06, 0.11, "i", "handoffs, rounding"],
+    ], e2e: 3.17, clientStart: 0.28, ttfb: 2.89 },
+  real: { title: "Question 3 of 40 (object_counting, id 692), times from server.log", bars: [
+      ["Wait for 900 ms silence", 0, 0.96, "m", "13:49:11.25 → 12.21"],
+      ["Smart Turn", 0.96, 0.063, "m", "→ 12.276"],
+      ["STT (Parakeet)", 1.024, 0.214, "m", "12.277 → 12.490"],
+      ["Notifier + router → LLM", 1.238, 0.002, "m", "12.492"],
+      ["LLM until first TTS text", 1.24, 0.785, "m", "→ 13.277"],
+      ["TTS first audio", 2.025, 0.40, "m", "→ 13.680"],
+    ], e2e: 2.43, clientStart: 0.33, ttfb: 2.10 },
+};
+function drawWF(kind) {
+  const s = document.getElementById("wf"); s.innerHTML = ""; defs(s);
+  const D = WF[kind], x0 = 260, sc = 220, top = 70, rh = 44;
+  label(s, 20, 30, D.title, "zl", "start");
+  for (let t = 0; t <= 3.5; t += 0.5) {
+    const x = x0 + t * sc;
+    el("line", { x1: x, y1: top - 10, x2: x, y2: top + D.bars.length * rh + 110, stroke: "#d5d8dd", "stroke-width": 1 }, s);
+    label(s, x, top + D.bars.length * rh + 128, t.toFixed(1) + " s", "t2");
+  }
+  D.bars.forEach(([name, a, w, tag, note], k) => {
+    const y = top + k * rh;
+    label(s, x0 - 12, y + 24, name, "t2", "end").setAttribute("style", "font-size:15px;font-weight:700");
+    el("rect", { x: x0 + a * sc, y: y + 6, width: Math.max(w * sc, 3), height: 28, rx: 4, fill: tag === "m" ? "#7aa2e8" : "#ffd8a8", stroke: tag === "m" ? "#0b3f9e" : "#8a4b00", "stroke-width": 2, "stroke-dasharray": tag === "m" ? "" : "6 4" }, s);
+    const txt = w.toFixed(w < 0.1 ? 3 : 2) + " s  " + (tag === "i" ? "[INFERENCE] " : "") + note;
+    const right = x0 + (a + w) * sc + 8, fits = right + txt.length * 7.6 < 1190;
+    label(s, fits ? right : x0 + a * sc - 8, y + 25, txt, "t2", fits ? "start" : "end").setAttribute("style", "font-size:14px" + (tag === "i" ? ";fill:#8a4b00;font-weight:700" : ""));
+  });
+  const yb = top + D.bars.length * rh + 6;
+  // server e2e
+  s.insertBefore(el("line", { x1: x0 + D.e2e * sc, y1: top - 14, x2: x0 + D.e2e * sc, y2: yb + 80, stroke: "#b3261e", "stroke-width": 3 }), s.firstChild.nextSibling);
+  badge(s, x0 + D.e2e * sc, top - 22, "server e2e " + D.e2e.toFixed(2) + " s");
+  // client ttfb bar
+  el("rect", { x: x0 + D.clientStart * sc, y: yb + 30, width: D.ttfb * sc, height: 28, rx: 4, fill: "#e3f4e8", stroke: "#0a6b2e", "stroke-width": 2 }, s);
+  label(s, x0 - 12, yb + 50, "Client ttfb", "t2", "end").setAttribute("style", "font-size:15px;font-weight:700");
+  label(s, x0 + D.clientStart * sc + 10, yb + 50, "client ttfb " + D.ttfb.toFixed(2) + " s (measured)", "t2", "start").setAttribute("style", "font-size:14px;font-weight:800;fill:#0a6b2e");
+  label(s, x0 + D.clientStart * sc, yb + 22, "↑ client clock starts ≈ " + D.clientStart.toFixed(2) + " s later [INFERENCE]", "t2", "start").setAttribute("style", "font-size:13px;fill:#8a4b00;font-weight:700");
+  document.getElementById("wf-notes").innerHTML = kind === "p50"
+    ? "<h3>How to read it</h3><ul class='tight'>" +
+      "<li><b>Biggest piece: the LLM</b>, 1.40 s until 3 sentences are ready " + M + ". Next is the <b>silence wait</b>, 0.96 s " + M + ". It comes from the eval's <code>silence_duration_ms: 900</code>, not from the server default of 64 ms.</li>" +
+      "<li>The stage bars add up to 3.06 s. Server <code>e2e</code> p50 is 3.17 s " + M + ". The 0.11 s gap is queue handoffs, and the fact that p50s don't add up exactly " + I + ". Per turn, the median left over after all logged stages was 0.075 s, Smart Turn included " + M + ".</li>" +
+      "<li>Client ttfb (2.89 s) is <b>shorter</b> than server e2e (3.17 s), because they use different clocks. The server starts at its estimated speech end. The client starts when its question audio ends, and that audio has a quiet tail of its own. Per turn, e2e − ttfb has a median of 0.33 s " + M + ". That this gap is the audio file's quiet tail is " + I + ". Network time on localhost is about 0 " + I + ".</li>" +
+      "<li>Not in the p50 bar: Smart Turn “incomplete” holds. 9 of 40 turns waited 0.14–1.12 s more (hold p90 0.60 s) " + M + ".</li></ul>"
+    : "<h3>One real turn</h3><ul class='tight'><li>Log lines at 13:49:12–13 in <code>server.log</code>: “Speech soft-ended” → “Smart Turn: complete (p=0.971, 62.2ms)” → “Parakeet final STT done … total=0.214s” → “Transcription completed” → “Qwen3-TTS TTFA: 0.40s” → “Last speech detected to first speech out: 2.428s”.</li>" +
+      "<li>The reply was short (14 output tokens), so the LLM part was only 0.78 s. Short answers reach TTS quickly.</li><li>Client ttfb for this question was 2.10 s (" + "<code>bba40.json</code>) " + M + ".</li></ul>";
+}
+document.querySelectorAll("[data-wf]").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-wf]").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  drawWF(b.dataset.wf);
+}));
+drawWF("p50");
+
+// ---------- numbers ----------
+const NUMS = [
+  ["First audio, client <b>ttfb</b>", "2.89 s", "4.43 s", "end of question audio → first <code>output_audio.delta</code>", "bba40.json, n=40"],
+  ["Server <b>e2e</b>", "3.17 s", "4.85 s", "estimated speech end → first yielded TTS block", "server.log latency lines"],
+  ["<b>vad_decision</b>", "0.96 s", "0.96 s", "speech end → VAD end decision", "server.log"],
+  ["Smart Turn inference", "0.062 s", "max 0.107 s", "one ONNX call", "server.log, 60 calls"],
+  ["<b>hold</b> (Smart Turn incomplete)", "0 s", "0.60 s", "extra wait before reply release", "server.log"],
+  ["<b>stt</b>", "0.30 s", "0.97 s", "Parakeet final transcription", "server.log"],
+  ["<b>llm_first_tts</b>", "1.40 s", "2.69 s", "LLM start → first text sent to TTS", "server.log"],
+  ["<b>llm</b> (full reply)", "2.42 s", "5.73 s", "LLM start → last token", "server.log"],
+  ["<b>tts_ttfa</b>", "0.34 s", "0.40 s", "TTS start → first model audio", "server.log"],
+  ["TTS speed", "2.27× real time", "—", "audio seconds / compute seconds", "server.log, 75 lines"],
+  ["STT WER / CER", "1.82% / 0.59%", "—", "LibriSpeech test-clean, n=100", "wer.json"],
+  ["STT time per utterance (offline)", "0.28 s", "0.59 s", "one utterance on GPU", "wer.json"],
+  ["Big Bench Audio accuracy", "42.5% (17/40)", "—", "rule-based answer extraction", "bba40.json"],
+  ["Default stack with Qwen3.5-4B", "<span class='tag x'>not measured</span>", "", "GPU had &lt; 24 GB free", "baselines.md"],
+  ["Barge-in reaction time", "<span class='tag x'>not measured</span>", "", "eval never talks over replies", "—"],
+];
+document.getElementById("numtab").innerHTML = NUMS.map(r => "<tr><td>" + r[0] + "</td><td class='n'>" + r[1] + "</td><td class='n'>" + r[2] + "</td><td>" + r[3] + "</td><td>" + r[4] + "</td></tr>").join("");
+
+// ---------- glossary ----------
+const GLOSS = [
+  ["VAD", "Voice Activity Detection. A small model (Silero) that scores each 32 ms chunk: speech or not. It decides when a turn starts and ends."],
+  ["Smart Turn", "A second model that reads the last 8 s and guesses whether the sentence is complete. It sets how long to wait, but never ends a turn on its own."],
+  ["STT / ASR", "Speech-to-text. Here: Parakeet TDT 0.6B v3 on the GPU."],
+  ["WER", "Word Error Rate = (substitutions + deletions + insertions) / reference words. Stage 0: 1.82%. CER is the same at character level."],
+  ["TTFT", "Time To First Token: from LLM start to its first text token. Measured inside the code but not printed. The log prints llm_first_tts instead."],
+  ["llm_first_tts", "From LLM start until the first text is handed to TTS. It includes the wait for 3 full sentences."],
+  ["tts_ttfa", "TTS Time To First Audio: from TTS start to the first audio chunk from the model."],
+  ["First audio / ttfb", "Time To First Byte of reply audio, at the client: end of the question audio → first audio delta. Stage 0 p50 2.89 s."],
+  ["e2e", "Server end-to-end: estimated end of speech → first TTS audio block. Stage 0 p50 3.17 s."],
+  ["Chunk", "Input: 512 samples of 16 kHz int16 = 32 ms = 1024 bytes. LLM: a batch of 3 sentences. TTS model: 8 codec tokens ≈ 640 ms of audio."],
+  ["Block", "512-sample int16 piece of reply audio (32 ms) on the output queue. The send loop batches up to 6400 bytes (200 ms) per event."],
+  ["Queue", "A thread-safe <code>queue.Queue</code>. One thread puts items in, the next takes them out. Eight per pipeline unit."],
+  ["Thread", "Each handler runs <code>BaseHandler.run</code> in its own Python thread. GPU work releases the GIL, so the stages overlap."],
+  ["Turn / revision", "One user utterance and its reply. If the user goes on inside the grace window, the same turn gets revision + 1."],
+  ["Barge-in", "The user talks over the assistant. The reply is cancelled, and only the words already heard stay in history."],
+  ["p50 / p90", "Median, and the value that 90% of turns stay under."],
+  ["[INFERENCE]", "A number or reason derived from measured data, but not measured directly."],
+];
+document.getElementById("gloss").innerHTML = GLOSS.map(g => "<div class='g'><b>" + g[0] + "</b><p>" + g[1] + "</p></div>").join("");
+
+// ---------- learn + build ----------
+const RM = "ROADMAP.md#";
+const LEARN = [
+  ["Stage 0 · Baseline", "stage-0---baseline-run-upstream-unchanged", "The whole pipeline", R("pipeline/turn_latency.py:86", "e2e_s"), "Re-run 4 eval questions with <code>--limit 4</code> and read each <code>latency:</code> line.", "You can name the biggest stage in each line."],
+  ["Stage 1 · Dataset", "stage-1---dataset-engineering", "What a turn is", R("api/openai_realtime/service.py:894", "def _on_transcription_completed"), "Print one <code>GenerateResponseRequest</code>, and find the chat it carries.", "You can map one dataset row to one turn."],
+  ["Stage 2 · STT", "stage-2---stt-modeling", "Parakeet / Whisper", R("STT/parakeet_tdt_handler.py:181", "def process"), "<code>scripts/stage0_wer.py --limit 20 --device cpu</code>: same WER, compare the speed.", "WER within 1 point of 1.82%."],
+  ["Stage 3 · LLM", "stage-3---llm-modeling", "Prompt, history, streaming", R("LLM/language_model.py:608", "def process"), "Set <code>--init_chat_prompt</code> to “Answer in one sentence.” and compare <code>llm=</code>.", "llm_first_tts p50 below 1.40 s."],
+  ["Stage 4 · TTS", "stage-4---tts-modeling", "Qwen3-TTS streaming", R("TTS/qwen3_tts_handler.py:702", "def _stream"), "<code>--qwen3_tts_non_streaming_mode false</code>, and compare <code>tts_ttfa</code>.", "tts_ttfa p50 vs 0.34 s."],
+  ["Stage 5 · Inference", "stage-5---inference-engineering", "Turn-taking + batching", R("arguments_classes/language_model_base_arguments.py:26", "stream_batch_sentences"), "<code>--stream_batch_sentences 1</code>, then eval <code>--silence-ms 500</code> (the eval overrides the server's <code>--min_silence_ms</code>).", "ttfb p50 below 2.89 s at equal accuracy."],
+  ["Stage 6 · MLOps", "stage-6---production-mlops", "Logs and regression", R("pipeline/turn_latency.py:559", "def first_yield"), "Run the <code>big_bench_audio compare</code> command on two runs.", "A slower change fails the check."],
+];
+document.getElementById("learncards").innerHTML = LEARN.map(c =>
+  "<div class='g lc'><div class='st'><a href='" + RM + c[1] + "'>" + c[0] + "</a></div><h3>" + c[2] + "</h3>" +
+  "<p><b>Read:</b> " + c[3] + "</p><p><b>Try:</b> " + c[4] + "</p><p><b>Done when:</b> " + c[5] + "</p></div>").join("");
+const BUILD = [
+  ["1 · Offline STT", "Stage 2", "stage-2---stt-modeling", "WAV → Parakeet or Whisper → text.", "WER on 100 LibriSpeech utterances within 1 point of 1.82%."],
+  ["2 · Offline LLM", "Stage 3", "stage-3---llm-modeling", "Transcript + short system prompt → reply.", "≤ 30 words, no markdown, answers the question (read 20)."],
+  ["3 · Offline TTS", "Stage 4", "stage-4---tts-modeling", "Reply → 16 kHz int16 WAV.", "Whisper on your WAV returns the reply text (WER &lt; 5%)."],
+  ["4 · Threads + queues", "Stage 0", "stage-0---baseline-run-upstream-unchanged", "One thread per stage, <code>queue.Queue</code> between them, the same loop as <code>BaseHandler</code>.", "WAV in → WAV out; each stage logs its time."],
+  ["5 · Stream", "Stage 5", "stage-5---inference-engineering", "Stream tokens, cut sentences, stream 32 ms PCM blocks over a WebSocket.", "First audio arrives before the LLM finishes."],
+  ["6 · VAD + barge-in", "Stage 5", "stage-5---inference-engineering", "Silero on 32 ms chunks; end on silence; a generation counter to cancel.", "No split turns on 40 questions; audio stops within 300 ms of barge-in."],
+];
+document.getElementById("buildcards").innerHTML = BUILD.map(c =>
+  "<div class='g lc'><div class='st'><a href='" + RM + c[2] + "'>" + c[1] + "</a></div><h3>" + c[0] + "</h3><p>" + c[3] + "</p><p><b>Done when:</b> " + c[4] + "</p></div>").join("");
+
+hydrateRefs(document);
+
+// ---------- nav highlight ----------
+const links = [...document.querySelectorAll("nav.top a")];
+const obs = new IntersectionObserver(es => {
+  es.forEach(e => { if (e.isIntersecting) links.forEach(a => a.classList.toggle("cur", a.getAttribute("href") === "#" + e.target.id)); });
+}, { rootMargin: "-40% 0px -55% 0px" });
+document.querySelectorAll("main section[id]").forEach(s => obs.observe(s));
+</script>
+<!-- ============ READER HIGHLIGHTS ============ -->
+<style>
+  mark.hl { color:#111; padding:0; border-radius:2px; }
+  a mark.hl { color:inherit; }
+  mark.hl-y { background:#fff176; }
+  mark.hl-o { background:#ffcc80; }
+  /* The toolbar sits in the sticky nav, so it never covers page text. */
+  nav.top .hl-ui { display:flex; gap:6px; padding:0 12px 8px; }
+  .hl-ui button { font:inherit; font-size:15px; font-weight:800; min-height:36px; padding:2px 10px; border:2px solid var(--line); border-radius:6px; background:#fff; color:var(--fg); cursor:pointer; }
+  .hl-ui button[data-hl="y"] { background:#fff176; }
+  .hl-ui button[data-hl="o"] { background:#ffcc80; }
+  .hl-ui button.armed { background:var(--hot); border-color:var(--hot); color:#fff; }
+  .hl-ui button:hover, .hl-ui button:focus-visible { outline:3px solid var(--accent); outline-offset:1px; }
+  .hl-toast { position:fixed; right:12px; bottom:12px; z-index:20; max-width:min(380px, calc(100vw - 24px)); background:var(--line); color:#fff; font-size:15px; padding:8px 12px; border-radius:6px; }
+  .hl-toast[hidden] { display:none; }
+  @media (max-width:899px) {
+    html { scroll-padding-top:110px; }
+    .hl-ui button { flex:1; padding:2px 4px; }
+  }
+  @media (min-width:900px) {
+    nav.top { display:flex; align-items:flex-start; }
+    nav.top .in { flex:1 1 auto; min-width:0; }
+    nav.top .hl-ui { flex:none; padding:8px 20px 8px 0; }
+  }
+  @media print {
+    .hl-ui, .hl-toast { display:none !important; }
+    mark.hl { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
+</style>
+<script>
+// Select text, click a colour. Highlights are saved in localStorage and found again on load by their text
+// (quote + a few characters before and after), so they survive edits to the page. Text that the page
+// re-renders (player step panels, big picture card, waterfall notes) and diagrams/buttons are not highlightable.
+(() => {
+  "use strict";
+  const KEY = "flow.html:highlights";
+  const L = {
+    bar: "Highlight", y: "Yellow", o: "Orange", rm: "Remove", all: "Clear all",
+    tipY: "Highlight the selected text in yellow", tipO: "Highlight the selected text in orange",
+    tipRm: "Remove highlights in the selected text", tipAll: "Remove every highlight on this page",
+    none: "Select some text on the page first.",
+    skip: "Diagrams, buttons and the player step text can't be highlighted.",
+    arm: "Click Clear all again to remove every highlight.",
+    noStore: "This view blocks storage, so highlights last only until you close the page. Open the file directly to keep them."
+  };
+  const SKIP = "svg, button, nav, .player, #bp-card, #wf-notes, script, style";
+  const CTX = 32;
+  const root = document.querySelector("main");
+  let marks = [], storeOk = true, warned = false, last = null, armT = null, toastT = null;
+
+  function load() {
+    let raw = null;
+    try { raw = localStorage.getItem(KEY); } catch (e) { storeOk = false; }
+    try { const a = JSON.parse(raw || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  }
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(marks)); } catch (e) { storeOk = false; }
+    if (!storeOk && !warned) { warned = true; toast(L.noStore); }
+  }
+
+  // Highlightable page text with whitespace runs collapsed to one space; pos[i] = [text node, offset] of char i.
+  function index() {
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT,
+      { acceptNode: n => n.parentElement.closest(SKIP) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+    const chars = [], pos = [];
+    for (let n; (n = w.nextNode());) {
+      const s = n.data;
+      for (let k = 0; k < s.length; k++) {
+        const ws = /\s/.test(s[k]);
+        if (ws && (!chars.length || chars[chars.length - 1] === " ")) continue;
+        chars.push(ws ? " " : s[k]); pos.push([n, k]);
+      }
+    }
+    return { text: chars.join(""), pos };
+  }
+  // [start, end) of the selection in index(); -1 when it holds no highlightable text.
+  function span(ix, r) {
+    let s = -1, e = -1, node = null, hit = false;
+    ix.pos.forEach(([n, k], i) => {
+      if (n !== node) { node = n; hit = r.intersectsNode(n); }
+      if (!hit || (n === r.startContainer && k < r.startOffset) || (n === r.endContainer && k >= r.endOffset)) return;
+      if (s < 0) s = i;
+      e = i + 1;
+    });
+    return [s, e];
+  }
+  function locate(ix, h) {
+    const t = ix.text;
+    let best = -1, score = -1;
+    for (let i = t.indexOf(h.q); i >= 0 && h.q; i = t.indexOf(h.q, i + 1)) {
+      let p = 0, x = 0;
+      while (p < h.p.length && t[i - 1 - p] === h.p[h.p.length - 1 - p]) p++;
+      while (x < h.x.length && t[i + h.q.length + x] === h.x[x]) x++;
+      if (p + x > score) { score = p + x; best = i; }
+    }
+    return best;
+  }
+  // Wrap chars [a, b) in <mark>, one per text node, last node first so earlier offsets stay valid.
+  function wrap(ix, a, b, h) {
+    const segs = [];
+    for (let i = a; i < b; i++) {
+      const [n, k] = ix.pos[i], g = segs[segs.length - 1];
+      if (g && g[0] === n) g[2] = k + 1; else segs.push([n, k, k + 1]);
+    }
+    for (const [n, from, to] of segs.reverse()) {
+      if (!n.data.slice(from, to).trim()) continue;
+      const mid = from ? n.splitText(from) : n;
+      if (to - from < mid.data.length) mid.splitText(to - from);
+      const m = document.createElement("mark");
+      m.className = "hl hl-" + h.c; m.dataset.hl = h.id;
+      mid.parentNode.insertBefore(m, mid); m.appendChild(mid);
+    }
+  }
+  function unwrap(ids) {
+    root.querySelectorAll("mark.hl").forEach(m => {
+      if (ids && !ids.has(m.dataset.hl)) return;
+      const p = m.parentNode; m.replaceWith(...m.childNodes); p.normalize();
+    });
+  }
+
+  function range(caretOk) {
+    const s = getSelection();
+    const r = s.rangeCount && s.getRangeAt(0).intersectsNode(root) ? s.getRangeAt(0) : last;
+    return r && (caretOk || !r.collapsed) ? r : null;
+  }
+  function done() { getSelection().removeAllRanges(); last = null; save(); }
+  // A selection that spans sections becomes one highlight per section, so a later edit in one section keeps the others.
+  function add(c) {
+    const r = range(false);
+    if (!r) return toast(L.none);
+    const ix = index(), [s, e] = span(ix, r);
+    if (s < 0) return toast(L.skip);
+    const sec = i => ix.pos[i][0].parentElement.closest("section, footer");
+    const parts = [];
+    for (let a = s, b; a < e; a = b) {
+      for (b = a; b < e && sec(b) === sec(a); b++);
+      let x = a, y = b;
+      while (x < y && ix.text[x] === " ") x++;
+      while (y > x && ix.text[y - 1] === " ") y--;
+      if (x < y) parts.push([x, y]);
+    }
+    const now = Date.now().toString(36);
+    parts.reverse().forEach(([a, b], k) => {
+      const h = { id: now + "-" + k, c, q: ix.text.slice(a, b), p: ix.text.slice(Math.max(0, a - CTX), a), x: ix.text.slice(b, b + CTX) };
+      wrap(ix, a, b, h); marks.push(h);
+    });
+    done();
+  }
+  function remove() {
+    const r = range(true);
+    if (!r) return toast(L.none);
+    const ids = new Set([...root.querySelectorAll("mark.hl")].filter(m => r.intersectsNode(m)).map(m => m.dataset.hl));
+    unwrap(ids); marks = marks.filter(h => !ids.has(h.id)); done();
+  }
+  function clearAll(btn) {
+    if (!armT) { btn.classList.add("armed"); toast(L.arm); armT = setTimeout(() => disarm(btn), 4000); return; }
+    disarm(btn); unwrap(null); marks = []; done();
+  }
+  function disarm(btn) { clearTimeout(armT); armT = null; btn.classList.remove("armed"); }
+
+  const tip = document.createElement("div");
+  tip.className = "hl-toast"; tip.setAttribute("role", "status"); tip.hidden = true;
+  function toast(msg) { tip.textContent = msg; tip.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { tip.hidden = true; }, 4000); }
+  const bar = document.createElement("div");
+  bar.className = "hl-ui"; bar.setAttribute("role", "toolbar"); bar.setAttribute("aria-label", L.bar);
+  bar.innerHTML = '<button type="button" data-hl="y" title="' + L.tipY + '">' + L.y + '</button>' +
+    '<button type="button" data-hl="o" title="' + L.tipO + '">' + L.o + '</button>' +
+    '<button type="button" data-hl="rm" title="' + L.tipRm + '">' + L.rm + '</button>' +
+    '<button type="button" data-hl="all" title="' + L.tipAll + '">' + L.all + '</button>';
+  bar.addEventListener("mousedown", e => e.preventDefault()); // keep the text selection when clicking
+  bar.addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const a = b.dataset.hl;
+    if (a !== "all" && armT) disarm(bar.querySelector('[data-hl="all"]'));
+    if (a === "y" || a === "o") add(a); else if (a === "rm") remove(); else if (a === "all") clearAll(b);
+  });
+  document.querySelector("nav.top").append(bar);
+  document.body.append(tip);
+  // Remember the last selection in the page, in case clicking or tabbing to the toolbar drops it.
+  document.addEventListener("selectionchange", () => {
+    const s = getSelection();
+    if (s.rangeCount && s.getRangeAt(0).intersectsNode(root)) last = s.getRangeAt(0).cloneRange();
+  });
+
+  // Restore after the page script above has rendered its tables and cards. Anchors not found any more are dropped.
+  const saved = load();
+  marks = saved.filter(h => {
+    if (!h || !h.id || !h.q || [h.q, h.p, h.x].some(s => typeof s !== "string") || (h.c !== "y" && h.c !== "o")) return false;
+    const ix = index(), i = locate(ix, h);
+    if (i < 0) return false;
+    wrap(ix, i, i + h.q.length, h);
+    return true;
+  });
+  if (storeOk && marks.length !== saved.length) save();
+})();
+</script>
+</body>
+</html>
